@@ -73,3 +73,97 @@ func (s *MemoryStore) Transition(_ context.Context, id string, to Status) (Migra
 	s.byID[id] = migration
 	return migration, nil
 }
+
+// ClaimNext assigns the oldest eligible migration to one worker.
+func (s *MemoryStore) ClaimNext(
+	_ context.Context,
+	workerID string,
+	now time.Time,
+	leaseUntil time.Time,
+) (Migration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var selected Migration
+	found := false
+	for _, migration := range s.byID {
+		eligible := migration.Status == StatusQueued ||
+			(migration.Status == StatusRunning && migration.LeaseExpiresAt != nil && !migration.LeaseExpiresAt.After(now))
+		if eligible && (!found || migration.CreatedAt.Before(selected.CreatedAt)) {
+			selected = migration
+			found = true
+		}
+	}
+	if !found {
+		return Migration{}, false, nil
+	}
+
+	selected.Status = StatusRunning
+	selected.ClaimedBy = workerID
+	selected.LeaseExpiresAt = timePointer(leaseUntil)
+	selected.UpdatedAt = now
+	s.byID[selected.ID] = selected
+	return selected, true, nil
+}
+
+// RenewLease extends a lease only while the same worker still owns it.
+func (s *MemoryStore) RenewLease(
+	_ context.Context,
+	id string,
+	workerID string,
+	now time.Time,
+	leaseUntil time.Time,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	migration, exists := s.byID[id]
+	if !exists {
+		return ErrNotFound
+	}
+	if migration.ClaimedBy != workerID || migration.LeaseExpiresAt == nil || !migration.LeaseExpiresAt.After(now) {
+		return ErrLeaseLost
+	}
+	if migration.Status != StatusRunning && migration.Status != StatusCancelling {
+		return ErrLeaseLost
+	}
+
+	migration.LeaseExpiresAt = timePointer(leaseUntil)
+	migration.UpdatedAt = now
+	s.byID[id] = migration
+	return nil
+}
+
+// Complete records a worker-owned terminal state and releases its lease.
+func (s *MemoryStore) Complete(
+	_ context.Context,
+	id string,
+	workerID string,
+	to Status,
+	now time.Time,
+) (Migration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	migration, exists := s.byID[id]
+	if !exists {
+		return Migration{}, ErrNotFound
+	}
+	if migration.ClaimedBy != workerID {
+		return Migration{}, ErrLeaseLost
+	}
+	if !CanTransition(migration.Status, to) {
+		return Migration{}, ErrInvalidTransition
+	}
+
+	migration.Status = to
+	migration.ClaimedBy = ""
+	migration.LeaseExpiresAt = nil
+	migration.UpdatedAt = now
+	s.byID[id] = migration
+	return migration, nil
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}

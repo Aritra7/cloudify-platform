@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -27,12 +29,19 @@ func TestPostgresStoreLifecycle(t *testing.T) {
 	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS migrations CASCADE"); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
-	schema, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", "001_create_migrations.sql"))
+	migrationFiles, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "*.sql"))
 	if err != nil {
-		t.Fatalf("read schema: %v", err)
+		t.Fatalf("list schema migrations: %v", err)
 	}
-	if _, err := database.ExecContext(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
+	sort.Strings(migrationFiles)
+	for _, migrationFile := range migrationFiles {
+		schema, err := os.ReadFile(migrationFile)
+		if err != nil {
+			t.Fatalf("read schema %s: %v", migrationFile, err)
+		}
+		if _, err := database.ExecContext(ctx, string(schema)); err != nil {
+			t.Fatalf("apply schema %s: %v", migrationFile, err)
+		}
 	}
 
 	service := NewService(NewPostgresStore(database))
@@ -55,9 +64,32 @@ func TestPostgresStoreLifecycle(t *testing.T) {
 		t.Fatalf("conflicting create error = %v, want ErrIdempotencyConflict", err)
 	}
 
-	cancelled, err := service.Cancel(ctx, created.ID)
+	store := NewPostgresStore(database)
+	now := time.Now().UTC()
+	claimed, ok, err := store.ClaimNext(ctx, "worker-1", now, now.Add(time.Minute))
+	if err != nil || !ok {
+		t.Fatalf("claim = (%v, %v), want successful claim", ok, err)
+	}
+	if claimed.ID != created.ID || claimed.ClaimedBy != "worker-1" {
+		t.Fatalf("claimed migration = (%q, %q), want (%q, worker-1)", claimed.ID, claimed.ClaimedBy, created.ID)
+	}
+	if _, ok, err := store.ClaimNext(ctx, "worker-2", now, now.Add(time.Minute)); err != nil || ok {
+		t.Fatalf("second claim = (%v, %v), want no work", ok, err)
+	}
+	if err := store.RenewLease(ctx, created.ID, "worker-1", now.Add(time.Second), now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("renew lease: %v", err)
+	}
+
+	cancelling, err := service.Cancel(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("cancel: %v", err)
+	}
+	if cancelling.Status != StatusCancelling {
+		t.Fatalf("cancelling status = %q, want %q", cancelling.Status, StatusCancelling)
+	}
+	cancelled, err := store.Complete(ctx, created.ID, "worker-1", StatusCancelled, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("complete cancellation: %v", err)
 	}
 	if cancelled.Status != StatusCancelled {
 		t.Fatalf("cancelled status = %q, want %q", cancelled.Status, StatusCancelled)

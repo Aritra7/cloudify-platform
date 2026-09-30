@@ -77,6 +77,9 @@ Status: in progress
 - [x] Transactional Postgres repository for migrations.
 - [ ] Postgres repositories for resources, attempts, events, and leases.
 - [x] Explicit migration state transitions enforced by the domain layer.
+- [x] Postgres work claiming with `SKIP LOCKED`, expiring leases, renewal, and
+  stale-worker protection.
+- [x] Dispatcher and cancellable worker interface.
 - Context propagation, request limits, authentication hooks, structured logs,
   Prometheus metrics, and OpenTelemetry traces.
 - A versioned worker interface for the Python engine. Start with a subprocess

@@ -21,6 +21,7 @@ var (
 	ErrNotFound            = errors.New("migration not found")
 	ErrInvalidTransition   = errors.New("invalid migration state transition")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
+	ErrLeaseLost           = errors.New("migration worker lease was lost")
 )
 
 // Source identifies the immutable application revision to migrate.
@@ -54,6 +55,8 @@ type Migration struct {
 	UpdatedAt      time.Time   `json:"updated_at"`
 	IdempotencyKey string      `json:"-"`
 	RequestHash    string      `json:"-"`
+	ClaimedBy      string      `json:"-"`
+	LeaseExpiresAt *time.Time  `json:"-"`
 }
 
 // CanTransition reports whether a state change is permitted by the lifecycle.

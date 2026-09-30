@@ -23,10 +23,13 @@ rewriting Cloudify's migration intelligence. See the
   and cancel migration endpoints with strict validation and idempotency.
 - Migration state has a transactional Postgres implementation and an explicit
   in-memory development fallback.
+- Database-backed work claiming uses row locks, expiring leases, heartbeats,
+  and ownership checks so multiple dispatchers can execute safely.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 
 The [API guide](docs/API.md) contains the current contract and local examples.
+The [execution model](docs/EXECUTION.md) documents job ownership and recovery.
 
 ## Original migration engine
 
