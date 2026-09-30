@@ -47,13 +47,43 @@ shell commands. It:
 7. removes the binary plan, which can contain cleartext sensitive values.
 
 The GCS backend provides the cross-process state lock. The in-process lock
-prevents duplicate execution inside one dispatcher replica. Apply remains
-intentionally disabled until policy approval and durable plan records are wired
-into the migration lifecycle.
+prevents duplicate execution inside one dispatcher replica.
+
+## Durable lifecycle and approval
+
+`POST /v1/migrations/{id}/plans` records an idempotent plan request in
+Postgres. A separate dispatcher claims queued requests with `SKIP LOCKED`,
+maintains an expiring lease while Terraform runs, and rejects stale-worker
+completion. Failed planning can be reclaimed after lease expiry without
+running two active owners.
+
+Policy is evaluated before work becomes claimable. The default policy limits
+regions and maximum instances and denies unauthenticated access. Rejected
+requests remain visible for audit but never invoke Terraform.
+
+A ready plan can be approved only when its policy passed and both plan
+artifacts exist. Approval atomically changes the status and appends an audit row
+containing the actor, timestamp, and artifact checksums. The actor header is not
+yet an authentication mechanism; apply remains disabled until authenticated
+authorization and secure storage for the exact binary plan are available.
+
+Enable the planner with:
+
+```sh
+export CLOUDIFY_TERRAFORM_ENABLED=true
+export CLOUDIFY_TERRAFORM_STATE_BUCKET=cloudify-terraform-state
+export CLOUDIFY_TERRAFORM_ARTIFACT_ROOT=/durable/cloudify-plan-artifacts
+go run ./cmd/control-plane
+```
+
+Optional settings include `CLOUDIFY_TERRAFORM_BINARY` and
+`CLOUDIFY_TERRAFORM_WORK_ROOT`. The file artifact implementation expects its
+root to be durable shared storage in multi-replica deployments.
 
 ## Verification
 
 Go tests cover validation, deterministic rendering, path traversal, private
 artifact permissions, lock cancellation, bounded command output, and planner
-orchestration. CI also runs `terraform fmt`, initializes the module without a
-backend, and runs `terraform validate`.
+orchestration. Store and API tests cover idempotency, policy rejection, leasing,
+approval preconditions, and the Postgres lifecycle. CI also runs `terraform
+fmt`, initializes the module without a backend, and runs `terraform validate`.

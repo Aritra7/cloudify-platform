@@ -107,7 +107,9 @@ Status: in progress
 - [x] Checksummed JSON and human-readable plan artifacts; binary plans are
   removed after export.
 - [x] CI formatting and validation for Terraform modules.
-- [ ] Durable plan metadata, policy approval, and guarded apply endpoint.
+- [x] Durable plan metadata, policy evaluation, leased execution, and auditable
+  approval.
+- [ ] Authenticated authorization and guarded apply of the exact approved plan.
 
 Implement versioned modules for:
 

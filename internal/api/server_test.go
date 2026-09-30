@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/events"
+	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/observability"
+	"github.com/Aritra7/cloudify-platform/internal/plans"
 )
 
 func TestOperationalEndpoints(t *testing.T) {
@@ -293,6 +296,75 @@ func TestMigrationEventStreamIsOrderedAndResumable(t *testing.T) {
 	}
 	if !strings.Contains(body, "id: "+strconv.FormatInt(second.Sequence, 10)) || !strings.Contains(body, `"message":"second"`) {
 		t.Fatalf("stream did not contain second event: %s", body)
+	}
+}
+
+func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
+	t.Parallel()
+	migrationStore := migrations.NewMemoryStore()
+	migrationService := migrations.NewService(migrationStore)
+	migration, _, err := migrationService.Create(context.Background(), "migration-request", migrations.CreateRequest{
+		Source:      migrations.Source{RepositoryURL: "https://github.com/example/application", Revision: "main"},
+		Destination: migrations.Destination{Provider: "gcp", ProjectID: "example-project", Region: "us-central1", Runtime: "cloud-run"},
+	})
+	if err != nil {
+		t.Fatalf("create migration: %v", err)
+	}
+	now := time.Unix(100, 0).UTC()
+	if _, claimed, err := migrationStore.ClaimNext(context.Background(), "migration-worker", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim migration = (%v, %v)", claimed, err)
+	}
+	if _, err := migrationStore.Complete(context.Background(), migration.ID, "migration-worker", migrations.StatusSucceeded, now.Add(time.Second)); err != nil {
+		t.Fatalf("complete migration: %v", err)
+	}
+	planStore := plans.NewMemoryStore()
+	planService := plans.NewService(planStore, plans.DefaultPolicy())
+	server := NewServerWithPlans(migrationService, events.NewMemoryStore(), planService, &observability.Metrics{})
+	specification := iac.DeploymentSpec{
+		Version: iac.SpecificationVersion, ProjectID: "example-project", Region: "us-central1", ServiceName: "example-api",
+		Image:               "us-docker.pkg.dev/example-project/apps/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ServiceAccountEmail: "cloud-run@example-project.iam.gserviceaccount.com",
+		CPU:                 "1", Memory: "512Mi", MaxInstances: 3,
+	}
+	body, err := json.Marshal(specification)
+	if err != nil {
+		t.Fatalf("encode specification: %v", err)
+	}
+	createRequest := httptest.NewRequest(http.MethodPost, "/v1/migrations/"+migration.ID+"/plans", strings.NewReader(string(body)))
+	createRequest.Header.Set("Idempotency-Key", "plan-request")
+	createResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusAccepted {
+		t.Fatalf("create plan status = %d: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var created plans.Plan
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
+		t.Fatalf("decode plan: %v", err)
+	}
+	if _, claimed, err := planStore.ClaimNext(context.Background(), "terraform-worker", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim plan = (%v, %v)", claimed, err)
+	}
+	artifact := &iac.ArtifactMetadata{
+		MigrationID: migration.ID, JSONPath: "/plan.json", TextPath: "/plan.txt", CreatedAt: now,
+		JSONSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TextSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	if _, err := planStore.Complete(context.Background(), created.ID, "terraform-worker", plans.StatusReady, true, artifact, "", now); err != nil {
+		t.Fatalf("complete plan: %v", err)
+	}
+	approveRequest := httptest.NewRequest(http.MethodPost, "/v1/plans/"+created.ID+"/approve", nil)
+	approveRequest.Header.Set("X-Cloudify-Actor", "reviewer@example.com")
+	approveResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("approve status = %d: %s", approveResponse.Code, approveResponse.Body.String())
+	}
+	var approved plans.Plan
+	if err := json.NewDecoder(approveResponse.Body).Decode(&approved); err != nil {
+		t.Fatalf("decode approved plan: %v", err)
+	}
+	if approved.Status != plans.StatusApproved || approved.ApprovedBy != "reviewer@example.com" {
+		t.Fatalf("approved plan = %#v", approved)
 	}
 }
 

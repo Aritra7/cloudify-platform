@@ -125,6 +125,47 @@ The Prometheus text endpoint reports claims, terminal completions, worker
 failures, lease-renewal failures, and current in-process executions. These are
 process metrics; durable migration and attempt state remains in Postgres.
 
+## Create a Terraform plan
+
+Terraform planning is asynchronous and requires a migration in the `succeeded`
+state. Submit a validated deployment specification with a new idempotency key:
+
+```sh
+curl --fail-with-body \
+  -X POST http://localhost:8080/v1/migrations/MIGRATION_ID/plans \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: plan-example-api-v1' \
+  --data @examples/deployment-spec.json
+```
+
+A policy-compliant request returns `202 Accepted` in the `queued` state. A
+request that violates a region, scaling, or public-access policy is durably
+recorded as `rejected` and returns `201 Created`; Terraform is never invoked.
+
+Read its status and checksummed artifacts with:
+
+```sh
+curl --fail-with-body http://localhost:8080/v1/plans/PLAN_ID
+```
+
+Plan states are `queued`, `planning`, `ready`, `rejected`, `failed`, and
+`approved`. Planning uses the same lease and stale-owner principles as
+migration execution.
+
+## Approve a Terraform plan
+
+```sh
+curl --fail-with-body \
+  -X POST http://localhost:8080/v1/plans/PLAN_ID/approve \
+  -H 'X-Cloudify-Actor: reviewer@example.com'
+```
+
+Only a policy-compliant `ready` plan with persisted artifacts can be approved.
+Postgres records the actor, timestamp, and exact artifact checksums in an
+append-only approval row. `X-Cloudify-Actor` is an audit propagation field, not
+authentication; production deployment still requires the planned identity and
+authorization middleware.
+
 ## Error shape
 
 ```json

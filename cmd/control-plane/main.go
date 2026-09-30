@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -16,8 +18,10 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/api"
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/executor"
+	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/observability"
+	"github.com/Aritra7/cloudify-platform/internal/plans"
 	"github.com/Aritra7/cloudify-platform/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -44,15 +48,20 @@ func run() error {
 	}
 	defer closeStores()
 	migrationService := migrations.NewService(stores.migrations)
+	planService := plans.NewService(stores.plans, plans.DefaultPolicy())
 	metrics := &observability.Metrics{}
 	dispatcherErrors, err := startDispatcher(ctx, stores.migrations, stores.events, metrics)
+	if err != nil {
+		return err
+	}
+	planDispatcherErrors, err := startPlanDispatcher(ctx, stores.plans)
 	if err != nil {
 		return err
 	}
 
 	server := &http.Server{
 		Addr:              address(),
-		Handler:           api.NewServer(migrationService, stores.events, metrics).Handler(),
+		Handler:           api.NewServerWithPlans(migrationService, stores.events, planService, metrics).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -77,6 +86,11 @@ func run() error {
 			runErr = fmt.Errorf("migration dispatcher stopped: %w", err)
 		}
 		stop()
+	case err := <-planDispatcherErrors:
+		if !errors.Is(err, context.Canceled) {
+			runErr = fmt.Errorf("Terraform plan dispatcher stopped: %w", err)
+		}
+		stop()
 	case <-ctx.Done():
 		slog.Info("shutdown requested")
 	}
@@ -85,6 +99,54 @@ func run() error {
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownContext)
 	return errors.Join(runErr, shutdownErr)
+}
+
+func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, error) {
+	enabled, err := strconv.ParseBool(environment("CLOUDIFY_TERRAFORM_ENABLED", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("parse CLOUDIFY_TERRAFORM_ENABLED: %w", err)
+	}
+	if !enabled {
+		return nil, nil
+	}
+	stateBucket := os.Getenv("CLOUDIFY_TERRAFORM_STATE_BUCKET")
+	if stateBucket == "" {
+		return nil, errors.New("CLOUDIFY_TERRAFORM_STATE_BUCKET is required when Terraform is enabled")
+	}
+	binaryPath, err := exec.LookPath(environment("CLOUDIFY_TERRAFORM_BINARY", "terraform"))
+	if err != nil {
+		return nil, fmt.Errorf("locate Terraform binary: %w", err)
+	}
+	workRoot, err := filepath.Abs(environment("CLOUDIFY_TERRAFORM_WORK_ROOT", filepath.Join(os.TempDir(), "cloudify-terraform-work")))
+	if err != nil {
+		return nil, fmt.Errorf("resolve Terraform work root: %w", err)
+	}
+	artifactRoot, err := filepath.Abs(environment("CLOUDIFY_TERRAFORM_ARTIFACT_ROOT", filepath.Join(os.TempDir(), "cloudify-terraform-artifacts")))
+	if err != nil {
+		return nil, fmt.Errorf("resolve Terraform artifact root: %w", err)
+	}
+	for _, directory := range []string{workRoot, artifactRoot} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return nil, fmt.Errorf("create Terraform directory: %w", err)
+		}
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+	}
+	planner := &iac.Planner{
+		Artifacts: iac.FileArtifactStore{Root: artifactRoot}, Locker: &iac.MemoryWorkspaceLocker{},
+		BinaryPath: binaryPath, StateBucket: stateBucket, StatePrefix: "cloudify/migrations",
+	}
+	dispatcher := &plans.Dispatcher{
+		Store: store, Planner: planner, WorkerID: fmt.Sprintf("terraform-%s-%d", hostname, os.Getpid()),
+		WorkRoot: workRoot, LeaseDuration: 10 * time.Minute, HeartbeatInterval: 30 * time.Second,
+		PollInterval: time.Second,
+	}
+	errors := make(chan error, 1)
+	go func() { errors <- dispatcher.Run(ctx) }()
+	slog.Info("Terraform plan dispatcher enabled", "worker_id", dispatcher.WorkerID)
+	return errors, nil
 }
 
 func startDispatcher(ctx context.Context, migrationStore migrations.Store, eventStore events.Store, metrics *observability.Metrics) (<-chan error, error) {
@@ -131,6 +193,7 @@ func startDispatcher(ctx context.Context, migrationStore migrations.Store, event
 type stores struct {
 	migrations migrations.Store
 	events     events.Store
+	plans      plans.Store
 }
 
 func platformStores(ctx context.Context) (stores, func(), error) {
@@ -140,6 +203,7 @@ func platformStores(ctx context.Context) (stores, func(), error) {
 		return stores{
 			migrations: migrations.NewMemoryStore(),
 			events:     events.NewMemoryStore(),
+			plans:      plans.NewMemoryStore(),
 		}, func() {}, nil
 	}
 
@@ -157,6 +221,7 @@ func platformStores(ctx context.Context) (stores, func(), error) {
 	return stores{
 		migrations: migrations.NewPostgresStore(database),
 		events:     events.NewPostgresStore(database),
+		plans:      plans.NewPostgresStore(database),
 	}, func() { _ = database.Close() }, nil
 }
 

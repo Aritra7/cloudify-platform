@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/events"
+	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/observability"
+	"github.com/Aritra7/cloudify-platform/internal/plans"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -24,6 +26,7 @@ type Server struct {
 	migrations *migrations.Service
 	events     events.Store
 	metrics    *observability.Metrics
+	plans      *plans.Service
 }
 
 // NewServer constructs an API server with operational endpoints.
@@ -32,7 +35,20 @@ func NewServer(migrationService *migrations.Service, eventStore events.Store, me
 	if len(metricSets) > 0 && metricSets[0] != nil {
 		metricSet = metricSets[0]
 	}
-	server := &Server{migrations: migrationService, events: eventStore, metrics: metricSet}
+	return NewServerWithPlans(migrationService, eventStore, nil, metricSet)
+}
+
+// NewServerWithPlans constructs the complete API including Terraform planning.
+func NewServerWithPlans(
+	migrationService *migrations.Service,
+	eventStore events.Store,
+	planService *plans.Service,
+	metricSet *observability.Metrics,
+) *Server {
+	if metricSet == nil {
+		metricSet = &observability.Metrics{}
+	}
+	server := &Server{migrations: migrationService, events: eventStore, metrics: metricSet, plans: planService}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready)
@@ -44,9 +60,89 @@ func NewServer(migrationService *migrations.Service, eventStore events.Store, me
 	mux.HandleFunc("GET /v1/migrations/{id}/attempts", server.listMigrationAttempts)
 	mux.HandleFunc("GET /v1/migrations/{id}/events", server.listMigrationEvents)
 	mux.HandleFunc("GET /v1/migrations/{id}/events/stream", server.streamMigrationEvents)
+	if planService != nil {
+		mux.HandleFunc("POST /v1/migrations/{id}/plans", server.createTerraformPlan)
+		mux.HandleFunc("GET /v1/plans/{id}", server.getTerraformPlan)
+		mux.HandleFunc("POST /v1/plans/{id}/approve", server.approveTerraformPlan)
+	}
 	server.handler = mux
 
 	return server
+}
+
+func (s *Server) createTerraformPlan(w http.ResponseWriter, request *http.Request) {
+	migrationID := request.PathValue("id")
+	migration, err := s.migrations.Get(request.Context(), migrationID)
+	if errors.Is(err, migrations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read migration")
+		return
+	}
+	if migration.Status != migrations.StatusSucceeded {
+		writeError(w, http.StatusConflict, "invalid_state", "Terraform planning requires a succeeded migration")
+		return
+	}
+	idempotencyKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" || len(idempotencyKey) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key is required and must not exceed 128 characters")
+		return
+	}
+	var specification iac.DeploymentSpec
+	if err := decodeJSON(w, request, &specification); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if specification.MigrationID != "" && specification.MigrationID != migrationID {
+		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "specification migration_id must match the URL")
+		return
+	}
+	plan, created, err := s.plans.Create(request.Context(), migrationID, idempotencyKey, specification)
+	switch {
+	case errors.Is(err, plans.ErrIdempotency):
+		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+	case err != nil:
+		writeError(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+	default:
+		w.Header().Set("Location", "/v1/plans/"+plan.ID)
+		if !created {
+			w.Header().Set("Idempotent-Replayed", "true")
+			writeJSON(w, http.StatusOK, plan)
+		} else if plan.Status == plans.StatusRejected {
+			writeJSON(w, http.StatusCreated, plan)
+		} else {
+			writeJSON(w, http.StatusAccepted, plan)
+		}
+	}
+}
+
+func (s *Server) getTerraformPlan(w http.ResponseWriter, request *http.Request) {
+	plan, err := s.plans.Get(request.Context(), request.PathValue("id"))
+	if errors.Is(err, plans.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read Terraform plan")
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) approveTerraformPlan(w http.ResponseWriter, request *http.Request) {
+	plan, err := s.plans.Approve(request.Context(), request.PathValue("id"), request.Header.Get("X-Cloudify-Actor"))
+	switch {
+	case errors.Is(err, plans.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, plans.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_state", "only a policy-compliant ready plan can be approved")
+	case err != nil:
+		writeError(w, http.StatusBadRequest, "invalid_approval", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, plan)
+	}
 }
 
 func (s *Server) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
