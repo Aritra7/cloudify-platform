@@ -145,7 +145,13 @@ func (s *PostgresStore) ClaimNext(
 	now time.Time,
 	leaseUntil time.Time,
 ) (Migration, bool, error) {
-	migration, err := scanMigration(s.db.QueryRowContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Migration{}, false, fmt.Errorf("begin claim transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	migration, err := scanMigration(tx.QueryRowContext(ctx, `
 		WITH candidate AS (
 			SELECT id
 			FROM migrations
@@ -156,7 +162,8 @@ func (s *PostgresStore) ClaimNext(
 			LIMIT 1
 		)
 		UPDATE migrations AS migration
-		SET status = 'running', claimed_by = $1, lease_expires_at = $3, updated_at = $2
+		SET status = 'running', claimed_by = $1, lease_expires_at = $3,
+		    updated_at = $2, attempt_count = migration.attempt_count + 1
 		FROM candidate
 		WHERE migration.id = candidate.id
 		RETURNING `+qualifiedMigrationColumns("migration"),
@@ -170,6 +177,23 @@ func (s *PostgresStore) ClaimNext(
 	if err != nil {
 		return Migration{}, false, fmt.Errorf("claim migration: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE migration_attempts
+		SET status = 'failed', finished_at = $2, heartbeat_at = $2
+		WHERE migration_id = $1 AND finished_at IS NULL`, migration.ID, now); err != nil {
+		return Migration{}, false, fmt.Errorf("close expired migration attempt: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO migration_attempts (
+			migration_id, attempt_number, worker_id, status, started_at, heartbeat_at
+		) VALUES ($1, $2, $3, 'running', $4, $4)`,
+		migration.ID, migration.AttemptCount, workerID, now,
+	); err != nil {
+		return Migration{}, false, fmt.Errorf("create migration attempt: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Migration{}, false, fmt.Errorf("commit migration claim: %w", err)
+	}
 	return migration, true, nil
 }
 
@@ -181,7 +205,12 @@ func (s *PostgresStore) RenewLease(
 	now time.Time,
 	leaseUntil time.Time,
 ) error {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin lease renewal transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE migrations
 		SET lease_expires_at = $4, updated_at = $3
 		WHERE id = $1
@@ -202,6 +231,23 @@ func (s *PostgresStore) RenewLease(
 	}
 	if rows != 1 {
 		return ErrLeaseLost
+	}
+	result, err = tx.ExecContext(ctx, `
+		UPDATE migration_attempts
+		SET heartbeat_at = $3
+		WHERE migration_id = $1 AND worker_id = $2 AND finished_at IS NULL`, id, workerID, now)
+	if err != nil {
+		return fmt.Errorf("update migration attempt heartbeat: %w", err)
+	}
+	rows, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read attempt heartbeat count: %w", err)
+	}
+	if rows != 1 {
+		return ErrLeaseLost
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit lease renewal: %w", err)
 	}
 	return nil
 }
@@ -251,25 +297,95 @@ func (s *PostgresStore) Complete(
 	if err != nil {
 		return Migration{}, fmt.Errorf("complete migration: %w", err)
 	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE migration_attempts
+		SET status = $3, heartbeat_at = $4, finished_at = $4
+		WHERE migration_id = $1 AND worker_id = $2 AND finished_at IS NULL`,
+		id, workerID, to, now,
+	)
+	if err != nil {
+		return Migration{}, fmt.Errorf("complete migration attempt: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Migration{}, fmt.Errorf("read completed attempt count: %w", err)
+	}
+	if rows != 1 {
+		return Migration{}, ErrLeaseLost
+	}
 	if err := tx.Commit(); err != nil {
 		return Migration{}, fmt.Errorf("commit migration completion: %w", err)
 	}
 	return completed, nil
 }
 
+// Retry atomically requeues a failed migration without deleting attempt history.
+func (s *PostgresStore) Retry(ctx context.Context, id string, now time.Time) (Migration, error) {
+	migration, err := scanMigration(s.db.QueryRowContext(ctx, `
+		UPDATE migrations
+		SET status = 'queued', updated_at = $2
+		WHERE id = $1 AND status = 'failed'
+		RETURNING `+migrationColumns, id, now))
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, getErr := s.Get(ctx, id); errors.Is(getErr, ErrNotFound) {
+			return Migration{}, ErrNotFound
+		} else if getErr != nil {
+			return Migration{}, getErr
+		}
+		return Migration{}, ErrInvalidTransition
+	}
+	if err != nil {
+		return Migration{}, fmt.Errorf("retry migration: %w", err)
+	}
+	return migration, nil
+}
+
+// ListAttempts returns immutable execution history in attempt-number order.
+func (s *PostgresStore) ListAttempts(ctx context.Context, id string) ([]Attempt, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, migration_id::text, attempt_number, worker_id, status,
+		       started_at, heartbeat_at, finished_at
+		FROM migration_attempts
+		WHERE migration_id = $1
+		ORDER BY attempt_number`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list migration attempts: %w", err)
+	}
+	defer rows.Close()
+	attempts := make([]Attempt, 0)
+	for rows.Next() {
+		var attempt Attempt
+		var finishedAt sql.NullTime
+		if err := rows.Scan(
+			&attempt.ID, &attempt.MigrationID, &attempt.Number, &attempt.WorkerID,
+			&attempt.Status, &attempt.StartedAt, &attempt.HeartbeatAt, &finishedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan migration attempt: %w", err)
+		}
+		if finishedAt.Valid {
+			attempt.FinishedAt = &finishedAt.Time
+		}
+		attempts = append(attempts, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate migration attempts: %w", err)
+	}
+	return attempts, nil
+}
+
 const migrationColumns = `
 	id::text, status, source_repository_url, source_revision,
 	destination_provider, destination_project_id, destination_region,
 	destination_runtime, destination_database, created_at, updated_at,
-	idempotency_key, request_hash, claimed_by, lease_expires_at`
+	idempotency_key, request_hash, claimed_by, lease_expires_at, attempt_count`
 
 func qualifiedMigrationColumns(alias string) string {
 	return fmt.Sprintf(`
 	%s.id::text, %s.status, %s.source_repository_url, %s.source_revision,
 	%s.destination_provider, %s.destination_project_id, %s.destination_region,
 	%s.destination_runtime, %s.destination_database, %s.created_at, %s.updated_at,
-	%s.idempotency_key, %s.request_hash, %s.claimed_by, %s.lease_expires_at`,
-		alias, alias, alias, alias,
+	%s.idempotency_key, %s.request_hash, %s.claimed_by, %s.lease_expires_at, %s.attempt_count`,
+		alias, alias, alias, alias, alias,
 		alias, alias, alias,
 		alias, alias, alias, alias,
 		alias, alias, alias, alias,
@@ -300,6 +416,7 @@ func scanMigration(row rowScanner) (Migration, error) {
 		&migration.RequestHash,
 		&claimedBy,
 		&leaseExpiresAt,
+		&migration.AttemptCount,
 	)
 	if claimedBy.Valid {
 		migration.ClaimedBy = claimedBy.String

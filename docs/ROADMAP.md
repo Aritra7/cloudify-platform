@@ -72,10 +72,11 @@ Status: in progress
 
 - [x] `POST /v1/migrations` with structured input and an idempotency key.
 - [x] Read and cancel endpoints.
-- [ ] Retry and event-stream endpoints.
+- [x] Retry and event-stream endpoints.
 - `GET` and asynchronous `DELETE` resource endpoints.
 - [x] Transactional Postgres repository for migrations.
-- [ ] Postgres repositories for resources, attempts, events, and leases.
+- [x] Postgres repositories for attempts, events, and leases.
+- [ ] Postgres repository for managed resources.
 - [x] Explicit migration state transitions enforced by the domain layer.
 - [x] Postgres work claiming with `SKIP LOCKED`, expiring leases, renewal, and
   stale-worker protection.
@@ -83,8 +84,8 @@ Status: in progress
 - [x] Isolated Python worker adapter with safe Git checkout, argument-based
   subprocesses, bounded output, process-group cancellation, and cleanup.
 - [x] Persist ordered worker events and expose paginated and resumable SSE APIs.
-- Context propagation, request limits, authentication hooks, structured logs,
-  Prometheus metrics, and OpenTelemetry traces.
+- [x] Context propagation, request limits, and Prometheus dispatcher metrics.
+- [ ] Authentication hooks, structured request logs, and OpenTelemetry traces.
 - [x] A versioned worker interface and local subprocess adapter for the Python
   engine. Introduce gRPC only when the worker must run remotely.
 

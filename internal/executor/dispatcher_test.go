@@ -1,12 +1,15 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/observability"
 )
 
 type workerFunc func(context.Context, migrations.Migration) error
@@ -56,6 +59,30 @@ func TestDispatcherRecordsWorkerFailure(t *testing.T) {
 	}
 	if stored.Status != migrations.StatusFailed {
 		t.Fatalf("status = %q, want %q", stored.Status, migrations.StatusFailed)
+	}
+}
+
+func TestDispatcherPublishesExecutionMetrics(t *testing.T) {
+	t.Parallel()
+	store, _, _ := queuedMigration(t)
+	metricSet := &observability.Metrics{}
+	dispatcher := testDispatcher(store, workerFunc(func(context.Context, migrations.Migration) error { return nil }))
+	dispatcher.Metrics = metricSet
+	if processed, err := dispatcher.RunOnce(context.Background()); err != nil || !processed {
+		t.Fatalf("RunOnce = (%v, %v), want processed migration", processed, err)
+	}
+	var output bytes.Buffer
+	if err := metricSet.WritePrometheus(&output); err != nil {
+		t.Fatalf("render metrics: %v", err)
+	}
+	for _, expected := range []string{
+		"cloudify_dispatcher_claims_total 1",
+		`cloudify_migration_completions_total{status="succeeded"} 1`,
+		"cloudify_dispatcher_inflight 0",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("dispatcher metrics missing %q:\n%s", expected, output.String())
+		}
 	}
 }
 

@@ -8,11 +8,14 @@ jobs through the shared store.
 
 Postgres selects the oldest eligible migration with `FOR UPDATE SKIP LOCKED` and
 atomically changes it from `queued` to `running`. The same operation records a
-worker identity and lease deadline. This allows multiple dispatcher replicas to
-claim work without a process-local queue or a global lock.
+worker identity, lease deadline, and a numbered execution attempt. This allows
+multiple dispatcher replicas to claim work without a process-local queue or a
+global lock.
 
 A `running` migration becomes claimable again after its lease expires. The new
-worker identity prevents the previous worker from recording a late result.
+worker identity prevents the previous worker from recording a late result. The
+expired attempt is closed as failed and the replacement claim creates the next
+attempt in the same database transaction.
 
 ## Heartbeats
 
@@ -71,6 +74,18 @@ Every child is started in a separate process group. Cancellation sends
 `SIGTERM` to the group, allows a bounded grace period, and then uses `SIGKILL`
 if descendants do not exit. Dispatcher status polling connects an API
 cancellation request to that process context.
+
+## Retry and observability
+
+Failed migrations can be explicitly moved back to `queued`. Retry never edits
+or deletes the previous attempt; a subsequent claim increments
+`attempt_count` and creates a new history row. Successful, failed, cancelled,
+and lease-recovered executions can therefore be distinguished during incident
+review.
+
+The dispatcher also publishes Prometheus counters for claims, completions,
+worker failures, and lease-renewal failures, plus an in-process execution
+gauge. Postgres remains the source of truth across process restarts.
 
 Worker lines are redacted for common credential forms and persisted as ordered
 Postgres events. Clients can retrieve pages or follow a resumable Server-Sent

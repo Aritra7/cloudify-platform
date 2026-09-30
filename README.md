@@ -20,7 +20,7 @@ rewriting Cloudify's migration intelligence. See the
 - The original Python engine and web console are preserved.
 - The Python unit suite has been updated for the current Dedalus agent API.
 - The Go control plane exposes health/readiness plus structured create, read,
-  and cancel migration endpoints with strict validation and idempotency.
+  cancel, and retry endpoints with strict validation and idempotency.
 - Migration state has a transactional Postgres implementation and an explicit
   in-memory development fallback.
 - Database-backed work claiming uses row locks, expiring leases, heartbeats,
@@ -30,6 +30,8 @@ rewriting Cloudify's migration intelligence. See the
   output, and terminates the process group on cancellation.
 - Redacted worker output is stored as ordered Postgres events and exposed
   through paginated and resumable Server-Sent Events APIs.
+- Every worker claim creates durable attempt history; lease recovery and manual
+  retry preserve prior outcomes. Prometheus metrics expose dispatcher activity.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 

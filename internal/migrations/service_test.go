@@ -104,6 +104,58 @@ func TestExpiredLeaseCanBeReclaimed(t *testing.T) {
 	}
 }
 
+func TestRetryPreservesAttemptHistory(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	service := NewService(store)
+	migration, _, err := service.Create(context.Background(), "request-1", validRequest())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	now := time.Unix(100, 0).UTC()
+	if _, claimed, err := store.ClaimNext(context.Background(), "worker-1", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim first attempt = (%v, %v)", claimed, err)
+	}
+	if _, err := store.Complete(context.Background(), migration.ID, "worker-1", StatusFailed, now.Add(time.Second)); err != nil {
+		t.Fatalf("fail first attempt: %v", err)
+	}
+
+	retried, err := service.Retry(context.Background(), migration.ID)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if retried.Status != StatusQueued || retried.AttemptCount != 1 {
+		t.Fatalf("retried migration = (%q, %d), want (queued, 1)", retried.Status, retried.AttemptCount)
+	}
+	if _, claimed, err := store.ClaimNext(context.Background(), "worker-2", now.Add(2*time.Second), now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim second attempt = (%v, %v)", claimed, err)
+	}
+	if _, err := store.Complete(context.Background(), migration.ID, "worker-2", StatusSucceeded, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("complete second attempt: %v", err)
+	}
+
+	attempts, err := service.ListAttempts(context.Background(), migration.ID)
+	if err != nil {
+		t.Fatalf("list attempts: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0].Status != StatusFailed || attempts[1].Status != StatusSucceeded {
+		t.Fatalf("attempts = %#v, want failed then succeeded", attempts)
+	}
+}
+
+func TestRetryRejectsNonFailedMigration(t *testing.T) {
+	t.Parallel()
+	service := NewService(NewMemoryStore())
+	migration, _, err := service.Create(context.Background(), "request-1", validRequest())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := service.Retry(context.Background(), migration.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("retry error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 func validRequest() CreateRequest {
 	return CreateRequest{
 		Source: Source{

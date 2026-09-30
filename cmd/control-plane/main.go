@@ -17,6 +17,7 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/executor"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/observability"
 	"github.com/Aritra7/cloudify-platform/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -43,14 +44,15 @@ func run() error {
 	}
 	defer closeStores()
 	migrationService := migrations.NewService(stores.migrations)
-	dispatcherErrors, err := startDispatcher(ctx, stores.migrations, stores.events)
+	metrics := &observability.Metrics{}
+	dispatcherErrors, err := startDispatcher(ctx, stores.migrations, stores.events, metrics)
 	if err != nil {
 		return err
 	}
 
 	server := &http.Server{
 		Addr:              address(),
-		Handler:           api.NewServer(migrationService, stores.events).Handler(),
+		Handler:           api.NewServer(migrationService, stores.events, metrics).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -85,7 +87,7 @@ func run() error {
 	return errors.Join(runErr, shutdownErr)
 }
 
-func startDispatcher(ctx context.Context, migrationStore migrations.Store, eventStore events.Store) (<-chan error, error) {
+func startDispatcher(ctx context.Context, migrationStore migrations.Store, eventStore events.Store, metrics *observability.Metrics) (<-chan error, error) {
 	enabled, err := strconv.ParseBool(environment("CLOUDIFY_WORKER_ENABLED", "false"))
 	if err != nil {
 		return nil, fmt.Errorf("parse CLOUDIFY_WORKER_ENABLED: %w", err)
@@ -118,6 +120,7 @@ func startDispatcher(ctx context.Context, migrationStore migrations.Store, event
 		HeartbeatInterval: 30 * time.Second,
 		CancellationPoll:  time.Second,
 		PollInterval:      time.Second,
+		Metrics:           metrics,
 	}
 	errors := make(chan error, 1)
 	go func() { errors <- dispatcher.Run(ctx) }()

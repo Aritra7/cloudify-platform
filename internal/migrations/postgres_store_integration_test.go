@@ -31,7 +31,7 @@ func TestPostgresStoreLifecycle(t *testing.T) {
 		t.Fatalf("acquire integration-test lock: %v", err)
 	}
 	t.Cleanup(func() { _, _ = database.ExecContext(context.Background(), "SELECT pg_advisory_unlock(934857)") })
-	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS migration_events, migrations CASCADE"); err != nil {
+	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS migration_attempts, migration_events, migrations CASCADE"); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
 	migrationFiles, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "*.sql"))
@@ -106,5 +106,33 @@ func TestPostgresStoreLifecycle(t *testing.T) {
 	}
 	if stored.Status != StatusCancelled {
 		t.Fatalf("stored status = %q, want %q", stored.Status, StatusCancelled)
+	}
+
+	retryCandidate, _, err := service.Create(ctx, "retry-integration-request", validRequest())
+	if err != nil {
+		t.Fatalf("create retry candidate: %v", err)
+	}
+	firstAttempt, ok, err := store.ClaimNext(ctx, "worker-1", now.Add(3*time.Second), now.Add(time.Minute))
+	if err != nil || !ok || firstAttempt.ID != retryCandidate.ID {
+		t.Fatalf("claim retry candidate = (%v, %v, %q)", ok, err, firstAttempt.ID)
+	}
+	if _, err := store.Complete(ctx, retryCandidate.ID, "worker-1", StatusFailed, now.Add(4*time.Second)); err != nil {
+		t.Fatalf("fail retry candidate: %v", err)
+	}
+	if _, err := service.Retry(ctx, retryCandidate.ID); err != nil {
+		t.Fatalf("retry candidate: %v", err)
+	}
+	if _, ok, err := store.ClaimNext(ctx, "worker-2", now.Add(5*time.Second), now.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("claim retried candidate = (%v, %v)", ok, err)
+	}
+	if _, err := store.Complete(ctx, retryCandidate.ID, "worker-2", StatusSucceeded, now.Add(6*time.Second)); err != nil {
+		t.Fatalf("complete retry candidate: %v", err)
+	}
+	attempts, err := service.ListAttempts(ctx, retryCandidate.ID)
+	if err != nil {
+		t.Fatalf("list retry attempts: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0].Status != StatusFailed || attempts[1].Status != StatusSucceeded {
+		t.Fatalf("attempts = %#v, want failed then succeeded", attempts)
 	}
 }

@@ -57,6 +57,19 @@ type Migration struct {
 	RequestHash    string      `json:"-"`
 	ClaimedBy      string      `json:"-"`
 	LeaseExpiresAt *time.Time  `json:"-"`
+	AttemptCount   int         `json:"attempt_count"`
+}
+
+// Attempt records one durable worker execution of a migration.
+type Attempt struct {
+	ID          int64      `json:"id"`
+	MigrationID string     `json:"migration_id"`
+	Number      int        `json:"number"`
+	WorkerID    string     `json:"worker_id"`
+	Status      Status     `json:"status"`
+	StartedAt   time.Time  `json:"started_at"`
+	HeartbeatAt time.Time  `json:"heartbeat_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
 // CanTransition reports whether a state change is permitted by the lifecycle.

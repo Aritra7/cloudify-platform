@@ -78,6 +78,19 @@ func (s *Service) Cancel(ctx context.Context, id string) (Migration, error) {
 	}
 }
 
+// Retry requeues a failed migration while preserving all prior attempts.
+func (s *Service) Retry(ctx context.Context, id string) (Migration, error) {
+	return s.store.Retry(ctx, id, s.now())
+}
+
+// ListAttempts returns execution history in attempt-number order.
+func (s *Service) ListAttempts(ctx context.Context, id string) ([]Attempt, error) {
+	if _, err := s.store.Get(ctx, id); err != nil {
+		return nil, err
+	}
+	return s.store.ListAttempts(ctx, id)
+}
+
 func randomID() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

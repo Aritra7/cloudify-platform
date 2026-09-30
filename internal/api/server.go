@@ -13,6 +13,7 @@ import (
 
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/observability"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -22,22 +23,63 @@ type Server struct {
 	handler    http.Handler
 	migrations *migrations.Service
 	events     events.Store
+	metrics    *observability.Metrics
 }
 
 // NewServer constructs an API server with operational endpoints.
-func NewServer(migrationService *migrations.Service, eventStore events.Store) *Server {
-	server := &Server{migrations: migrationService, events: eventStore}
+func NewServer(migrationService *migrations.Service, eventStore events.Store, metricSets ...*observability.Metrics) *Server {
+	metricSet := &observability.Metrics{}
+	if len(metricSets) > 0 && metricSets[0] != nil {
+		metricSet = metricSets[0]
+	}
+	server := &Server{migrations: migrationService, events: eventStore, metrics: metricSet}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready)
+	mux.HandleFunc("GET /metrics", server.prometheusMetrics)
 	mux.HandleFunc("POST /v1/migrations", server.createMigration)
 	mux.HandleFunc("GET /v1/migrations/{id}", server.getMigration)
 	mux.HandleFunc("POST /v1/migrations/{id}/cancel", server.cancelMigration)
+	mux.HandleFunc("POST /v1/migrations/{id}/retry", server.retryMigration)
+	mux.HandleFunc("GET /v1/migrations/{id}/attempts", server.listMigrationAttempts)
 	mux.HandleFunc("GET /v1/migrations/{id}/events", server.listMigrationEvents)
 	mux.HandleFunc("GET /v1/migrations/{id}/events/stream", server.streamMigrationEvents)
 	server.handler = mux
 
 	return server
+}
+
+func (s *Server) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = s.metrics.WritePrometheus(w)
+}
+
+func (s *Server) retryMigration(w http.ResponseWriter, request *http.Request) {
+	migration, err := s.migrations.Retry(request.Context(), request.PathValue("id"))
+	switch {
+	case errors.Is(err, migrations.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, migrations.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_state", "only failed migrations can be retried")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not retry migration")
+	default:
+		writeJSON(w, http.StatusAccepted, migration)
+	}
+}
+
+func (s *Server) listMigrationAttempts(w http.ResponseWriter, request *http.Request) {
+	attempts, err := s.migrations.ListAttempts(request.Context(), request.PathValue("id"))
+	if errors.Is(err, migrations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read migration attempts")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attempts": attempts})
 }
 
 func (s *Server) listMigrationEvents(w http.ResponseWriter, request *http.Request) {

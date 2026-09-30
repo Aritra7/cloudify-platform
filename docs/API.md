@@ -15,7 +15,7 @@ set. This mode is intended only for development.
 
 ## Start with Postgres
 
-Apply `db/migrations/001_create_migrations.sql`, then run:
+Apply every SQL file in `db/migrations` in numeric order, then run:
 
 ```sh
 export CLOUDIFY_DATABASE_URL='postgres://cloudify:cloudify@localhost:5432/cloudify?sslmode=disable'
@@ -67,6 +67,28 @@ A queued migration moves directly to `cancelled`. A running migration moves to
 `cancelling`, allowing the worker to perform cleanup before it records the
 terminal `cancelled` state.
 
+## Retry a failed migration
+
+```sh
+curl --fail-with-body \
+  -X POST http://localhost:8080/v1/migrations/MIGRATION_ID/retry
+```
+
+Only a migration in the `failed` state can be retried. The endpoint returns
+`202 Accepted` and moves it back to `queued`. Prior execution attempts remain
+available for diagnosis and the next claim receives a new attempt number.
+
+## Read execution attempts
+
+```sh
+curl --fail-with-body \
+  http://localhost:8080/v1/migrations/MIGRATION_ID/attempts
+```
+
+Each attempt includes its worker, terminal status, start time, last heartbeat,
+and finish time. A lease-expired execution is closed as failed before the next
+worker opens a new attempt.
+
 ## Read migration events
 
 ```sh
@@ -92,6 +114,16 @@ after all events for a terminal migration have been delivered.
 Worker output is redacted for common password, token, secret, API-key, and
 Bearer-authorization forms before persistence. Redaction is defense in depth;
 workers must still avoid emitting credentials.
+
+## Metrics
+
+```sh
+curl --fail-with-body http://localhost:8080/metrics
+```
+
+The Prometheus text endpoint reports claims, terminal completions, worker
+failures, lease-renewal failures, and current in-process executions. These are
+process metrics; durable migration and attempt state remains in Postgres.
 
 ## Error shape
 

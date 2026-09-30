@@ -62,6 +62,54 @@ func TestUnknownRoute(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpoint(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	response := httptest.NewRecorder()
+	newTestServer().Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if !strings.Contains(response.Body.String(), "cloudify_dispatcher_claims_total 0") {
+		t.Fatalf("metrics response missing dispatcher claims: %s", response.Body.String())
+	}
+}
+
+func TestRetryAndAttemptHistoryEndpoints(t *testing.T) {
+	t.Parallel()
+	store := migrations.NewMemoryStore()
+	service := migrations.NewService(store)
+	server := NewServer(service, events.NewMemoryStore())
+	migration, _, err := service.Create(context.Background(), "retry-request", migrations.CreateRequest{
+		Source:      migrations.Source{RepositoryURL: "https://github.com/example/application", Revision: "main"},
+		Destination: migrations.Destination{Provider: "gcp", ProjectID: "example-project", Region: "us-central1", Runtime: "cloud-run"},
+	})
+	if err != nil {
+		t.Fatalf("create migration: %v", err)
+	}
+	now := time.Unix(100, 0).UTC()
+	if _, claimed, err := store.ClaimNext(context.Background(), "worker-1", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim = (%v, %v)", claimed, err)
+	}
+	if _, err := store.Complete(context.Background(), migration.ID, "worker-1", migrations.StatusFailed, now.Add(time.Second)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	retryRequest := httptest.NewRequest(http.MethodPost, "/v1/migrations/"+migration.ID+"/retry", nil)
+	retryResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(retryResponse, retryRequest)
+	if retryResponse.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d, want %d: %s", retryResponse.Code, http.StatusAccepted, retryResponse.Body.String())
+	}
+
+	attemptRequest := httptest.NewRequest(http.MethodGet, "/v1/migrations/"+migration.ID+"/attempts", nil)
+	attemptResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(attemptResponse, attemptRequest)
+	if attemptResponse.Code != http.StatusOK || !strings.Contains(attemptResponse.Body.String(), `"status":"failed"`) {
+		t.Fatalf("attempt response = %d: %s", attemptResponse.Code, attemptResponse.Body.String())
+	}
+}
+
 func TestCreateGetAndCancelMigration(t *testing.T) {
 	t.Parallel()
 

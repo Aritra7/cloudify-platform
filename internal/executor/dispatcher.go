@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/observability"
 )
 
 // Worker executes one claimed migration and must honor context cancellation.
@@ -24,6 +25,7 @@ type Dispatcher struct {
 	CancellationPoll  time.Duration
 	PollInterval      time.Duration
 	Now               func() time.Time
+	Metrics           *observability.Metrics
 }
 
 // Run polls until its context is cancelled.
@@ -65,6 +67,10 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 	if err != nil || !claimed {
 		return claimed, err
 	}
+	if d.Metrics != nil {
+		d.Metrics.Claimed()
+		defer d.Metrics.Released()
+	}
 
 	workerContext, cancelWorker := context.WithCancel(ctx)
 	defer cancelWorker()
@@ -92,8 +98,14 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 			} else if workerErr != nil {
 				target = migrations.StatusFailed
 			}
+			if target == migrations.StatusFailed && d.Metrics != nil {
+				d.Metrics.WorkerFailed()
+			}
 			if _, err := d.Store.Complete(ctx, migration.ID, d.WorkerID, target, d.Now()); err != nil {
 				return true, fmt.Errorf("complete migration: %w", err)
+			}
+			if d.Metrics != nil {
+				d.Metrics.Completed(string(target))
 			}
 			return true, nil
 
@@ -107,6 +119,9 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 				heartbeatTime.Add(d.LeaseDuration),
 			); err != nil {
 				cancelWorker()
+				if d.Metrics != nil {
+					d.Metrics.LeaseRenewFailed()
+				}
 				return true, fmt.Errorf("renew migration lease: %w", err)
 			}
 
@@ -134,6 +149,9 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 				d.Now(),
 			); err != nil {
 				return true, fmt.Errorf("complete migration cancellation: %w", err)
+			}
+			if d.Metrics != nil {
+				d.Metrics.Completed(string(migrations.StatusCancelled))
 			}
 			return true, nil
 

@@ -12,6 +12,8 @@ type MemoryStore struct {
 	mu             sync.RWMutex
 	byID           map[string]Migration
 	byIdempotency  map[string]string
+	attempts       map[string][]Attempt
+	nextAttemptID  int64
 	transitionTime func() time.Time
 }
 
@@ -20,6 +22,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		byID:           make(map[string]Migration),
 		byIdempotency:  make(map[string]string),
+		attempts:       make(map[string][]Attempt),
 		transitionTime: func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -98,11 +101,27 @@ func (s *MemoryStore) ClaimNext(
 		return Migration{}, false, nil
 	}
 
+	if selected.Status == StatusRunning {
+		attemptList := s.attempts[selected.ID]
+		if len(attemptList) > 0 {
+			finished := now
+			attemptList[len(attemptList)-1].Status = StatusFailed
+			attemptList[len(attemptList)-1].FinishedAt = &finished
+			s.attempts[selected.ID] = attemptList
+		}
+	}
+
 	selected.Status = StatusRunning
 	selected.ClaimedBy = workerID
 	selected.LeaseExpiresAt = timePointer(leaseUntil)
 	selected.UpdatedAt = now
+	selected.AttemptCount++
 	s.byID[selected.ID] = selected
+	s.nextAttemptID++
+	s.attempts[selected.ID] = append(s.attempts[selected.ID], Attempt{
+		ID: s.nextAttemptID, MigrationID: selected.ID, Number: selected.AttemptCount,
+		WorkerID: workerID, Status: StatusRunning, StartedAt: now, HeartbeatAt: now,
+	})
 	return selected, true, nil
 }
 
@@ -131,6 +150,11 @@ func (s *MemoryStore) RenewLease(
 	migration.LeaseExpiresAt = timePointer(leaseUntil)
 	migration.UpdatedAt = now
 	s.byID[id] = migration
+	attemptList := s.attempts[id]
+	if len(attemptList) > 0 {
+		attemptList[len(attemptList)-1].HeartbeatAt = now
+		s.attempts[id] = attemptList
+	}
 	return nil
 }
 
@@ -161,7 +185,40 @@ func (s *MemoryStore) Complete(
 	migration.LeaseExpiresAt = nil
 	migration.UpdatedAt = now
 	s.byID[id] = migration
+	attemptList := s.attempts[id]
+	if len(attemptList) > 0 {
+		attemptList[len(attemptList)-1].Status = to
+		attemptList[len(attemptList)-1].FinishedAt = timePointer(now)
+		s.attempts[id] = attemptList
+	}
 	return migration, nil
+}
+
+// Retry requeues only failed migrations and retains their attempt history.
+func (s *MemoryStore) Retry(_ context.Context, id string, now time.Time) (Migration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	migration, exists := s.byID[id]
+	if !exists {
+		return Migration{}, ErrNotFound
+	}
+	if migration.Status != StatusFailed {
+		return Migration{}, ErrInvalidTransition
+	}
+	migration.Status = StatusQueued
+	migration.UpdatedAt = now
+	s.byID[id] = migration
+	return migration, nil
+}
+
+// ListAttempts returns a defensive copy ordered by attempt number.
+func (s *MemoryStore) ListAttempts(_ context.Context, id string) ([]Attempt, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, exists := s.byID[id]; !exists {
+		return nil, ErrNotFound
+	}
+	return append([]Attempt(nil), s.attempts[id]...), nil
 }
 
 func timePointer(value time.Time) *time.Time {

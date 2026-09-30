@@ -11,4 +11,6 @@ type Store interface {
 	ClaimNext(context.Context, string, time.Time, time.Time) (migration Migration, claimed bool, err error)
 	RenewLease(context.Context, string, string, time.Time, time.Time) error
 	Complete(context.Context, string, string, Status, time.Time) (Migration, error)
+	Retry(context.Context, string, time.Time) (Migration, error)
+	ListAttempts(context.Context, string) ([]Attempt, error)
 }
