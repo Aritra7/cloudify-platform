@@ -48,6 +48,7 @@ func TestPostgresStoreEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
+	database.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = database.Close() })
 	ctx := context.Background()
 	if _, err := database.ExecContext(ctx, "SELECT pg_advisory_lock(934857)"); err != nil {

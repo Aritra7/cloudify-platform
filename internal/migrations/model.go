@@ -79,3 +79,8 @@ func CanTransition(from, to Status) bool {
 
 	return allowed[from][to]
 }
+
+// IsTerminal reports whether no more lifecycle work is expected.
+func IsTerminal(status Status) bool {
+	return status == StatusSucceeded || status == StatusFailed || status == StatusCancelled
+}
