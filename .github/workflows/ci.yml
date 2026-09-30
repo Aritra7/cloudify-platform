@@ -46,3 +46,15 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: pytest -q
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.16.4"
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive internal/iac/modules
+      - run: terraform -chdir=internal/iac/modules/cloud-run init -backend=false
+      - run: terraform -chdir=internal/iac/modules/cloud-run validate

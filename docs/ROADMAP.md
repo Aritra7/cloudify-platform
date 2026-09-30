@@ -98,10 +98,21 @@ Exit criteria:
 
 ## Phase 2 — Terraform-owned GCP infrastructure
 
+Status: in progress
+
+- [x] Versioned Cloud Run v2 module.
+- [x] Validated, deterministic deployment-spec renderer.
+- [x] `terraform-exec` plan runner with GCS backend configuration and bounded
+  command output.
+- [x] Checksummed JSON and human-readable plan artifacts; binary plans are
+  removed after export.
+- [x] CI formatting and validation for Terraform modules.
+- [ ] Durable plan metadata, policy approval, and guarded apply endpoint.
+
 Implement versioned modules for:
 
 - Artifact Registry
-- Cloud Run
+- [x] Cloud Run
 - Cloud SQL
 - IAM and workload identities
 - Secret Manager references

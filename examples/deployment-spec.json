@@ -1,0 +1,24 @@
+{
+  "version": "cloudify.dev/v1alpha1",
+  "migration_id": "7b629d1d-7602-4de6-82bd-340fc18e55b6",
+  "project_id": "example-project",
+  "region": "us-central1",
+  "service_name": "example-api",
+  "image": "us-central1-docker.pkg.dev/example-project/apps/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "service_account_email": "cloud-run@example-project.iam.gserviceaccount.com",
+  "cpu": "1",
+  "memory": "512Mi",
+  "min_instances": 0,
+  "max_instances": 3,
+  "allow_unauthenticated": false,
+  "non_sensitive_environment": {
+    "SPRING_PROFILES_ACTIVE": "production"
+  },
+  "secrets": [
+    {
+      "environment_variable": "DATABASE_URL",
+      "secret": "database-url",
+      "version": "latest"
+    }
+  ]
+}

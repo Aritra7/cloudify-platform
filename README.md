@@ -32,11 +32,17 @@ rewriting Cloudify's migration intelligence. See the
   through paginated and resumable Server-Sent Events APIs.
 - Every worker claim creates durable attempt history; lease recovery and manual
   retry preserve prior outcomes. Prometheus metrics expose dispatcher activity.
+- A validated deployment specification now renders a deterministic Cloud Run
+  Terraform module. The Go planner uses `terraform-exec`, GCS state locking,
+  immutable image digests, Secret Manager references, and checksummed plan
+  artifacts; apply remains gated for the next policy milestone.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 
 The [API guide](docs/API.md) contains the current contract and local examples.
 The [execution model](docs/EXECUTION.md) documents job ownership and recovery.
+The [Terraform planning guide](docs/TERRAFORM.md) documents the IaC trust
+boundary, state model, and current apply gate.
 
 ## Original migration engine
 
