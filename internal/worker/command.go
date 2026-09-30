@@ -60,15 +60,15 @@ func (runner OSCommandRunner) Run(ctx context.Context, command Command, output O
 	process.Env = command.Env
 	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	stdout, err := process.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("create stdout pipe: %w", err)
-	}
-	stderr, err := process.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("create stderr pipe: %w", err)
-	}
+	stdout, stdoutWriter := io.Pipe()
+	stderr, stderrWriter := io.Pipe()
+	process.Stdout = stdoutWriter
+	process.Stderr = stderrWriter
 	if err := process.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return fmt.Errorf("start %s: %w", command.Name, err)
 	}
 
@@ -90,6 +90,9 @@ func (runner OSCommandRunner) Run(ctx context.Context, command Command, output O
 				outputErrMu.Lock()
 				outputErr = errors.Join(outputErr, err)
 				outputErrMu.Unlock()
+				if pipe, ok := reader.(*io.PipeReader); ok {
+					_ = pipe.CloseWithError(err)
+				}
 				cancelOutput()
 				return
 			}
@@ -98,6 +101,9 @@ func (runner OSCommandRunner) Run(ctx context.Context, command Command, output O
 			outputErrMu.Lock()
 			outputErr = errors.Join(outputErr, err)
 			outputErrMu.Unlock()
+			if pipe, ok := reader.(*io.PipeReader); ok {
+				_ = pipe.CloseWithError(err)
+			}
 			cancelOutput()
 		}
 	}
@@ -105,7 +111,12 @@ func (runner OSCommandRunner) Run(ctx context.Context, command Command, output O
 	go read(StreamStderr, stderr)
 
 	waitResult := make(chan error, 1)
-	go func() { waitResult <- process.Wait() }()
+	go func() {
+		waitErr := process.Wait()
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
+		waitResult <- waitErr
+	}()
 
 	var processErr error
 	select {
