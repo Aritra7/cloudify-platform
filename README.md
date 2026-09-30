@@ -1,12 +1,30 @@
-# Cloudify — Agentic Cloud Migration
+# Cloudify Platform
 
-Multi-agent automation that takes full-stack cloud migration from days to under
-20 minutes via OpenAI + Anthropic Claude APIs and the Dedalus SDK. Built at
-TartanHacks 2026.
+Cloudify Platform is a Go control plane for self-service, desired-state cloud
+migrations. It is being built on top of the Cloudify Python migration engine
+created by Anmol Sahu, Sanath Mahesh Kumar, Aritra Ray, Manav Somani, and
+Anubhav Sharma at TartanHacks 2026.
+
+The new control plane will add durable jobs, Terraform-owned infrastructure,
+drift reconciliation, a Terraform provider, and a Kubernetes operator without
+rewriting Cloudify's migration intelligence. See the
+[implementation roadmap](docs/ROADMAP.md) for scope and acceptance criteria.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Dedalus](https://img.shields.io/badge/powered%20by-Dedalus-purple.svg)
+
+## Current status
+
+- The original Python engine and web console are preserved.
+- The Python unit suite has been updated for the current Dedalus agent API.
+- A dependency-free Go control-plane server now exposes `/healthz` and
+  `/readyz` and shuts down gracefully on `SIGTERM`.
+- CI runs the Go race detector, `go vet`, and the Python test suite.
+- Migration/resource APIs and persistence are the next milestone.
+
+## Original migration engine
 
 ## Why
 

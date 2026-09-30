@@ -1,13 +1,13 @@
-"""
-Unit tests for Code Analyzer Agent.
-"""
+"""Unit tests for the code-analysis agent and its deterministic tools."""
+
+import json
+from pathlib import Path
 
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.base_agent import AgentStatus, EventBus
 from agents.code_analyzer import CodeAnalyzerAgent
+from agents.dedalus_tools import analyze_react_app, detect_database_type
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def code_analyzer(event_bus, config):
     return CodeAnalyzerAgent(
         event_bus=event_bus,
         config=config,
-        claude_api_key="test-api-key",
+        dedalus_api_key="test-api-key",
     )
 
 
@@ -56,8 +56,10 @@ async def test_analyzer_initialization(code_analyzer):
 
 
 @pytest.mark.asyncio
-async def test_analyzer_invalid_source_path(code_analyzer):
+async def test_analyzer_invalid_source_path(code_analyzer, tmp_path):
     """Test analyzer with invalid source path."""
+    code_analyzer.config["source"]["path"] = str(tmp_path / "missing")
+
     result = await code_analyzer.execute()
 
     assert result.status == AgentStatus.FAILED
@@ -66,9 +68,8 @@ async def test_analyzer_invalid_source_path(code_analyzer):
 
 
 @pytest.mark.asyncio
-async def test_analyze_maven_pom(code_analyzer, tmp_path):
-    """Test Maven pom.xml analysis."""
-    # Create test pom.xml
+async def test_analyze_maven_backend(code_analyzer, tmp_path):
+    """Analyze Maven metadata and Spring configuration through the agent."""
     backend_path = tmp_path / "backend"
     backend_path.mkdir()
 
@@ -91,59 +92,37 @@ async def test_analyze_maven_pom(code_analyzer, tmp_path):
 """
     (backend_path / "pom.xml").write_text(pom_xml)
 
-    # Analyze
-    analysis = {}
-    await code_analyzer._analyze_maven(backend_path, analysis)
+    resources = backend_path / "src" / "main" / "resources"
+    resources.mkdir(parents=True)
+    (resources / "application.properties").write_text(
+        "server.port=8080\n"
+        "spring.datasource.url=jdbc:h2:mem:testdb\n"
+        "spring.datasource.username=sa\n"
+    )
 
+    analysis = await code_analyzer._analyze_backend(str(backend_path))
+
+    assert analysis["build_tool"] == "maven"
     assert analysis["java_version"] == "21"
     assert analysis["spring_boot_version"] == "3.5.0"
     assert "spring-boot-starter-web" in analysis["dependencies"]
+    assert analysis["database_config"]["spring.datasource.url"] == "jdbc:h2:mem:testdb"
+    assert analysis["server_config"]["server.port"] == "8080"
 
 
 @pytest.mark.asyncio
-async def test_analyze_application_properties(code_analyzer, tmp_path):
-    """Test application.properties analysis."""
-    backend_path = tmp_path / "backend"
-    src_path = backend_path / "src" / "main" / "resources"
-    src_path.mkdir(parents=True)
-
-    props = """spring.application.name=test-app
-server.port=8080
-spring.datasource.url=jdbc:h2:mem:testdb
-spring.datasource.username=sa
-spring.datasource.password=
-"""
-    (src_path / "application.properties").write_text(props)
-
-    analysis = {}
-    await code_analyzer._analyze_application_properties(
-        src_path / "application.properties", analysis
-    )
-
-    assert "url" in analysis["database_config"]
-    assert "jdbc:h2:mem:testdb" in analysis["database_config"]["url"]
-    assert "port" in analysis["server_config"]
-    assert analysis["server_config"]["port"] == "8080"
-
-
-@pytest.mark.asyncio
-async def test_analyze_database_h2_memory(code_analyzer):
+async def test_detect_database_h2_memory():
     """Test H2 in-memory database analysis."""
-    db_config = {
-        "url": "jdbc:h2:mem:testdb",
-        "username": "sa",
-    }
-
-    result = await code_analyzer._analyze_database(db_config)
+    result = json.loads(await detect_database_type("jdbc:h2:mem:testdb"))
 
     assert result["type"] == "h2"
     assert result["mode"] == "in-memory"
     assert result["migration_recommended"] is True
-    assert len(result["migration_notes"]) > 0
+    assert len(result["notes"]) > 0
 
 
 @pytest.mark.asyncio
-async def test_find_api_endpoints(code_analyzer, tmp_path):
+async def test_find_react_api_endpoints(tmp_path):
     """Test API endpoint detection in React code."""
     frontend_path = tmp_path / "frontend"
     src_path = frontend_path / "src"
@@ -161,7 +140,6 @@ export const fetchData = () => {
 """
     (src_path / "api.js").write_text(react_code)
 
-    endpoints = await code_analyzer._find_api_endpoints(src_path)
+    analysis = json.loads(await analyze_react_app(str(frontend_path)))
 
-    assert len(endpoints) > 0
-    assert "http://localhost:8080" in endpoints
+    assert "http://localhost:8080" in analysis["api_endpoints"]
