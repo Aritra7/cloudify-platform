@@ -26,6 +26,10 @@ func TestPostgresStoreLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	ctx := context.Background()
+	if _, err := database.ExecContext(ctx, "SELECT pg_advisory_lock(934857)"); err != nil {
+		t.Fatalf("acquire integration-test lock: %v", err)
+	}
+	t.Cleanup(func() { _, _ = database.ExecContext(context.Background(), "SELECT pg_advisory_unlock(934857)") })
 	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS migrations CASCADE"); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}

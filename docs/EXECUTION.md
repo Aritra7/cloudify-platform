@@ -72,5 +72,6 @@ Every child is started in a separate process group. Cancellation sends
 if descendants do not exit. Dispatcher status polling connects an API
 cancellation request to that process context.
 
-The current sink writes structured logs. Durable event persistence and the
-event-stream API are the next integration step.
+Worker lines are redacted for common credential forms and persisted as ordered
+Postgres events. Clients can retrieve pages or follow a resumable Server-Sent
+Events stream. Sequence IDs provide a stable cursor across API restarts.

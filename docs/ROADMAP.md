@@ -82,7 +82,7 @@ Status: in progress
 - [x] Dispatcher and cancellable worker interface.
 - [x] Isolated Python worker adapter with safe Git checkout, argument-based
   subprocesses, bounded output, process-group cancellation, and cleanup.
-- [ ] Persist worker events and expose the event stream.
+- [x] Persist ordered worker events and expose paginated and resumable SSE APIs.
 - Context propagation, request limits, authentication hooks, structured logs,
   Prometheus metrics, and OpenTelemetry traces.
 - [x] A versioned worker interface and local subprocess adapter for the Python

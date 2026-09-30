@@ -28,6 +28,8 @@ rewriting Cloudify's migration intelligence. See the
 - An opt-in Python worker checks out an immutable source revision in an
   isolated workspace, supervises Cloudify without a shell, streams structured
   output, and terminates the process group on cancellation.
+- Redacted worker output is stored as ordered Postgres events and exposed
+  through paginated and resumable Server-Sent Events APIs.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 

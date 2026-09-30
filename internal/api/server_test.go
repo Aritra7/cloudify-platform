@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 )
 
@@ -185,6 +189,65 @@ func TestCreateMigrationValidation(t *testing.T) {
 	}
 }
 
+func TestMigrationEventStreamIsOrderedAndResumable(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer()
+	migration, _, err := server.migrations.Create(context.Background(), "event-request", migrations.CreateRequest{
+		Source: migrations.Source{RepositoryURL: "https://github.com/example/application", Revision: "main"},
+		Destination: migrations.Destination{
+			Provider: "gcp", ProjectID: "example-project", Region: "us-central1", Runtime: "cloud-run",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create migration: %v", err)
+	}
+	first, err := server.events.Append(context.Background(), events.Event{
+		MigrationID: migration.ID,
+		Kind:        "worker_output",
+		Phase:       "checkout",
+		Stream:      "stdout",
+		Message:     "first",
+		CreatedAt:   time.Unix(100, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	second, err := server.events.Append(context.Background(), events.Event{
+		MigrationID: migration.ID,
+		Kind:        "worker_output",
+		Phase:       "migration",
+		Stream:      "stderr",
+		Message:     "second",
+		CreatedAt:   time.Unix(101, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("append second event: %v", err)
+	}
+	if _, err := server.migrations.Cancel(context.Background(), migration.ID); err != nil {
+		t.Fatalf("cancel migration: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/migrations/"+migration.ID+"/events/stream?after="+strconv.FormatInt(first.Sequence, 10),
+		nil,
+	)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "first") {
+		t.Fatalf("stream replayed an event before the cursor: %s", body)
+	}
+	if !strings.Contains(body, "id: "+strconv.FormatInt(second.Sequence, 10)) || !strings.Contains(body, `"message":"second"`) {
+		t.Fatalf("stream did not contain second event: %s", body)
+	}
+}
+
 func newTestServer() *Server {
-	return NewServer(migrations.NewService(migrations.NewMemoryStore()))
+	return NewServer(migrations.NewService(migrations.NewMemoryStore()), events.NewMemoryStore())
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/api"
+	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/executor"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/worker"
@@ -36,20 +37,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, closeStore, err := migrationStore(ctx)
+	stores, closeStores, err := platformStores(ctx)
 	if err != nil {
 		return err
 	}
-	defer closeStore()
-	migrationService := migrations.NewService(store)
-	dispatcherErrors, err := startDispatcher(ctx, store)
+	defer closeStores()
+	migrationService := migrations.NewService(stores.migrations)
+	dispatcherErrors, err := startDispatcher(ctx, stores.migrations, stores.events)
 	if err != nil {
 		return err
 	}
 
 	server := &http.Server{
 		Addr:              address(),
-		Handler:           api.NewServer(migrationService).Handler(),
+		Handler:           api.NewServer(migrationService, stores.events).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -84,7 +85,7 @@ func run() error {
 	return errors.Join(runErr, shutdownErr)
 }
 
-func startDispatcher(ctx context.Context, store migrations.Store) (<-chan error, error) {
+func startDispatcher(ctx context.Context, migrationStore migrations.Store, eventStore events.Store) (<-chan error, error) {
 	enabled, err := strconv.ParseBool(environment("CLOUDIFY_WORKER_ENABLED", "false"))
 	if err != nil {
 		return nil, fmt.Errorf("parse CLOUDIFY_WORKER_ENABLED: %w", err)
@@ -98,7 +99,9 @@ func startDispatcher(ctx context.Context, store migrations.Store) (<-chan error,
 		WorkRoot:     os.Getenv("CLOUDIFY_WORK_ROOT"),
 		PythonBinary: environment("CLOUDIFY_PYTHON_BINARY", "python3"),
 		GitBinary:    environment("CLOUDIFY_GIT_BINARY", "git"),
-	}, worker.OSCommandRunner{TerminationGracePeriod: 10 * time.Second}, worker.SlogSink{})
+	}, worker.OSCommandRunner{TerminationGracePeriod: 10 * time.Second}, worker.RedactingSink{
+		Next: events.WorkerSink{Store: eventStore},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("configure Python worker: %w", err)
 	}
@@ -108,7 +111,7 @@ func startDispatcher(ctx context.Context, store migrations.Store) (<-chan error,
 		hostname = "unknown-host"
 	}
 	dispatcher := &executor.Dispatcher{
-		Store:             store,
+		Store:             migrationStore,
 		Worker:            pythonWorker,
 		WorkerID:          fmt.Sprintf("%s-%d", hostname, os.Getpid()),
 		LeaseDuration:     2 * time.Minute,
@@ -122,25 +125,36 @@ func startDispatcher(ctx context.Context, store migrations.Store) (<-chan error,
 	return errors, nil
 }
 
-func migrationStore(ctx context.Context) (migrations.Store, func(), error) {
+type stores struct {
+	migrations migrations.Store
+	events     events.Store
+}
+
+func platformStores(ctx context.Context) (stores, func(), error) {
 	databaseURL := os.Getenv("CLOUDIFY_DATABASE_URL")
 	if databaseURL == "" {
 		slog.Warn("CLOUDIFY_DATABASE_URL is not set; migration state is not durable")
-		return migrations.NewMemoryStore(), func() {}, nil
+		return stores{
+			migrations: migrations.NewMemoryStore(),
+			events:     events.NewMemoryStore(),
+		}, func() {}, nil
 	}
 
 	database, err := sql.Open("pgx", databaseURL)
 	if err != nil {
-		return nil, func() {}, err
+		return stores{}, func() {}, err
 	}
 	pingContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := database.PingContext(pingContext); err != nil {
 		_ = database.Close()
-		return nil, func() {}, err
+		return stores{}, func() {}, err
 	}
 
-	return migrations.NewPostgresStore(database), func() { _ = database.Close() }, nil
+	return stores{
+		migrations: migrations.NewPostgresStore(database),
+		events:     events.NewPostgresStore(database),
+	}, func() { _ = database.Close() }, nil
 }
 
 func address() string {

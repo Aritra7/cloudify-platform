@@ -67,6 +67,32 @@ A queued migration moves directly to `cancelled`. A running migration moves to
 `cancelling`, allowing the worker to perform cleanup before it records the
 terminal `cancelled` state.
 
+## Read migration events
+
+```sh
+curl --fail-with-body \
+  'http://localhost:8080/v1/migrations/MIGRATION_ID/events?after=0'
+```
+
+Events have globally increasing sequence IDs and are returned in order. Pass
+the last processed sequence as `after` to resume without replaying it.
+
+## Stream migration events
+
+```sh
+curl --no-buffer --fail-with-body \
+  'http://localhost:8080/v1/migrations/MIGRATION_ID/events/stream?after=0'
+```
+
+The endpoint uses Server-Sent Events. Clients can resume through the `after`
+query parameter or the standard `Last-Event-ID` header. The server sends
+keepalive comments while an active migration is quiet and closes the stream
+after all events for a terminal migration have been delivered.
+
+Worker output is redacted for common password, token, secret, API-key, and
+Bearer-authorization forms before persistence. Redaction is defense in depth;
+workers must still avoid emitting credentials.
+
 ## Error shape
 
 ```json

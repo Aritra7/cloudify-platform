@@ -3,11 +3,15 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 )
 
@@ -17,20 +21,128 @@ const maxRequestBodyBytes = 1 << 20
 type Server struct {
 	handler    http.Handler
 	migrations *migrations.Service
+	events     events.Store
 }
 
 // NewServer constructs an API server with operational endpoints.
-func NewServer(migrationService *migrations.Service) *Server {
-	server := &Server{migrations: migrationService}
+func NewServer(migrationService *migrations.Service, eventStore events.Store) *Server {
+	server := &Server{migrations: migrationService, events: eventStore}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready)
 	mux.HandleFunc("POST /v1/migrations", server.createMigration)
 	mux.HandleFunc("GET /v1/migrations/{id}", server.getMigration)
 	mux.HandleFunc("POST /v1/migrations/{id}/cancel", server.cancelMigration)
+	mux.HandleFunc("GET /v1/migrations/{id}/events", server.listMigrationEvents)
+	mux.HandleFunc("GET /v1/migrations/{id}/events/stream", server.streamMigrationEvents)
 	server.handler = mux
 
 	return server
+}
+
+func (s *Server) listMigrationEvents(w http.ResponseWriter, request *http.Request) {
+	migrationID := request.PathValue("id")
+	if _, err := s.migrations.Get(request.Context(), migrationID); errors.Is(err, migrations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read migration")
+		return
+	}
+
+	after, err := eventCursor(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
+	}
+	eventList, err := s.events.ListAfter(request.Context(), migrationID, after, 200)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read migration events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": eventList})
+}
+
+func (s *Server) streamMigrationEvents(w http.ResponseWriter, request *http.Request) {
+	migrationID := request.PathValue("id")
+	migration, err := s.migrations.Get(request.Context(), migrationID)
+	if errors.Is(err, migrations.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read migration")
+		return
+	}
+	cursor, err := eventCursor(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming_unsupported", "response streaming is unavailable")
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	pollTicker := time.NewTicker(500 * time.Millisecond)
+	defer pollTicker.Stop()
+	keepaliveTicker := time.NewTicker(15 * time.Second)
+	defer keepaliveTicker.Stop()
+	for {
+		eventList, err := s.events.ListAfter(request.Context(), migrationID, cursor, 200)
+		if err != nil {
+			_, _ = fmt.Fprint(w, "event: error\ndata: {\"message\":\"event stream failed\"}\n\n")
+			flusher.Flush()
+			return
+		}
+		for _, event := range eventList {
+			data, err := json.Marshal(event)
+			if err != nil {
+				return
+			}
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Kind, data)
+			cursor = event.Sequence
+		}
+		if len(eventList) > 0 {
+			flusher.Flush()
+			continue
+		}
+
+		migration, err = s.migrations.Get(request.Context(), migrationID)
+		if err != nil || migrations.IsTerminal(migration.Status) {
+			return
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-pollTicker.C:
+		case <-keepaliveTicker.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func eventCursor(request *http.Request) (int64, error) {
+	value := request.URL.Query().Get("after")
+	if value == "" {
+		value = request.Header.Get("Last-Event-ID")
+	}
+	if value == "" {
+		return 0, nil
+	}
+	cursor, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || cursor < 0 {
+		return 0, errors.New("event cursor must be a non-negative integer")
+	}
+	return cursor, nil
 }
 
 // Handler exposes the server as an http.Handler for production and tests.
