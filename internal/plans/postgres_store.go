@@ -140,7 +140,7 @@ func (store *PostgresStore) Complete(
 	}
 	plan, err := scanPlan(store.db.QueryRowContext(ctx, `
 		UPDATE terraform_plans SET
-			status = $3, has_changes = CASE WHEN $3 = 'ready' THEN $4 ELSE NULL END,
+			status = $3, has_changes = CASE WHEN $3::text = 'ready' THEN $4::boolean ELSE NULL::boolean END,
 			artifact_json_path = $5, artifact_text_path = $6,
 			artifact_json_sha256 = $7, artifact_text_sha256 = $8,
 			artifact_created_at = $9, failure_message = $10,
