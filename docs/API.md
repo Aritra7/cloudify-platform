@@ -223,6 +223,9 @@ Each record exposes its desired deployment specification, source plan,
 generation, observed generation, drift state, conditions, retry count,
 remediation policy, and next reconciliation time. Newly projected resources
 start in `unknown` until the GCP observer completes a reconciliation.
+When `CLOUDIFY_RECONCILER_ENABLED=true`, observed state and conditions update
+as the leased controller classifies live Cloud Run configuration. See
+[Cloud Run reconciliation](RECONCILIATION.md).
 
 ## Error shape
 

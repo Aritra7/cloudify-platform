@@ -144,8 +144,12 @@ Status: in progress
   registry.
 - [x] Record desired state, generation, observed generation, conditions, retry
   count, remediation policy, and reconciliation scheduling fields.
-- [ ] Observe Cloud Run state and classify drift under a renewable lease.
-- [ ] Trigger policy-gated Terraform remediation with backoff and audit events.
+- [x] Observe Cloud Run and IAM state and classify configuration or deletion
+  drift under a renewable lease.
+- [x] Trigger policy-gated Terraform remediation with exponential backoff and
+  the existing approval/apply audit trail.
+- [ ] Add immutable per-reconciliation observation events and fault-injection
+  coverage for database outages.
 
 Each resource records desired state, observed state, generation, observed
 generation, conditions, retry count, and remediation policy.

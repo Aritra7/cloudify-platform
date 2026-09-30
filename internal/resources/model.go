@@ -28,6 +28,7 @@ const (
 )
 
 var ErrNotFound = errors.New("managed resource not found")
+var ErrLeaseLost = errors.New("managed resource reconciliation lease was lost")
 
 type Condition struct {
 	Type               string    `json:"type"`
@@ -61,6 +62,16 @@ type Resource struct {
 	UpdatedAt          time.Time          `json:"updated_at"`
 	ClaimedBy          string             `json:"-"`
 	LeaseExpiresAt     *time.Time         `json:"-"`
+}
+
+type ReconcileResult struct {
+	Observed           json.RawMessage
+	State              State
+	ObservedGeneration int64
+	Conditions         []Condition
+	RetryCount         int
+	NextReconcileAt    time.Time
+	LastReconciledAt   time.Time
 }
 
 func appliedResourceID(spec iac.DeploymentSpec) string {

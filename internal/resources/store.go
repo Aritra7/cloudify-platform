@@ -11,6 +11,9 @@ type Store interface {
 	UpsertApplied(context.Context, Resource) (Resource, bool, error)
 	Get(context.Context, string) (Resource, error)
 	List(context.Context, int) ([]Resource, error)
+	ClaimNext(context.Context, string, time.Time, time.Time) (Resource, bool, error)
+	RenewLease(context.Context, string, string, time.Time, time.Time) error
+	Complete(context.Context, string, string, ReconcileResult, time.Time) (Resource, error)
 }
 
 type AppliedPlanSource interface {

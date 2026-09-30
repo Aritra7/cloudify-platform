@@ -45,6 +45,9 @@ rewriting Cloudify's migration intelligence. See the
 - Successful applies are projected idempotently into a durable managed-resource
   registry with desired state, generation, remediation policy, conditions, and
   reconciliation scheduling fields.
+- An optional leased reconciler reads live Cloud Run and IAM state with the
+  official Go client, classifies configuration or deletion drift, and advances
+  policy-gated Terraform remediation with exponential backoff.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 
@@ -52,6 +55,8 @@ The [API guide](docs/API.md) contains the current contract and local examples.
 The [execution model](docs/EXECUTION.md) documents job ownership and recovery.
 The [Terraform planning guide](docs/TERRAFORM.md) documents the IaC trust
 boundary, state model, and current apply gate.
+The [reconciliation guide](docs/RECONCILIATION.md) documents live-state
+observation, drift classification, leases, and remediation.
 
 ## Original migration engine
 

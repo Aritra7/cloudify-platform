@@ -23,6 +23,12 @@ func TestAppliedPlansProjectIdempotentlyAndAdvanceGeneration(t *testing.T) {
 	if err != nil || changed || replayed.Generation != 1 {
 		t.Fatalf("replayed projection = (%#v, %v, %v)", replayed, changed, err)
 	}
+	sameDesired := first
+	sameDesired.ID = "remediation-plan"
+	remediated, changed, err := service.ProjectApplied(context.Background(), sameDesired)
+	if err != nil || !changed || remediated.Generation != 1 {
+		t.Fatalf("remediation projection = (%#v, %v, %v)", remediated, changed, err)
+	}
 	second := appliedPlan("plan-2", "image-two")
 	updated, changed, err := service.ProjectApplied(context.Background(), second)
 	if err != nil || !changed || updated.ID != resource.ID || updated.Generation != 2 || updated.SourcePlanID != "plan-2" {

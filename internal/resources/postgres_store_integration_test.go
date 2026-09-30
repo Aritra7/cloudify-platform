@@ -65,7 +65,8 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 	}
 	insertAppliedPlan(t, ctx, database, plan)
 
-	service := NewService(NewPostgresStore(database))
+	store := NewPostgresStore(database)
+	service := NewService(store)
 	created, changed, err := service.ProjectApplied(ctx, plan)
 	if err != nil || !changed || created.Generation != 1 {
 		t.Fatalf("project applied plan = (%#v, %v, %v)", created, changed, err)
@@ -77,6 +78,21 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 	listed, err := service.List(ctx, 100)
 	if err != nil || len(listed) != 1 || listed[0].ID != created.ID {
 		t.Fatalf("list resources = (%#v, %v)", listed, err)
+	}
+	reconcileAt := time.Now().UTC().Add(time.Second)
+	claimed, ok, err := store.ClaimNext(ctx, "reconciler-1", reconcileAt, reconcileAt.Add(time.Minute))
+	if err != nil || !ok || claimed.ID != created.ID {
+		t.Fatalf("claim resource = (%#v, %v, %v)", claimed, ok, err)
+	}
+	if err := store.RenewLease(ctx, created.ID, "reconciler-1", reconcileAt.Add(time.Second), reconcileAt.Add(2*time.Minute)); err != nil {
+		t.Fatalf("renew resource lease: %v", err)
+	}
+	completed, err := store.Complete(ctx, created.ID, "reconciler-1", ReconcileResult{
+		Observed: []byte(`{"exists":true}`), State: StateInSync, ObservedGeneration: created.Generation,
+		Conditions: []Condition{}, NextReconcileAt: reconcileAt.Add(time.Minute), LastReconciledAt: reconcileAt,
+	}, reconcileAt.Add(2*time.Second))
+	if err != nil || completed.State != StateInSync || completed.ClaimedBy != "" {
+		t.Fatalf("complete resource = (%#v, %v)", completed, err)
 	}
 }
 

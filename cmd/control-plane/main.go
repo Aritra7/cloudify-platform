@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	cloudrun "cloud.google.com/go/run/apiv2"
 	"github.com/Aritra7/cloudify-platform/internal/api"
 	"github.com/Aritra7/cloudify-platform/internal/auth"
 	"github.com/Aritra7/cloudify-platform/internal/events"
@@ -63,6 +64,11 @@ func run() error {
 		return err
 	}
 	projectorErrors := startResourceProjector(ctx, stores.plans, resourceService)
+	reconcilerErrors, closeReconciler, err := startResourceReconciler(ctx, stores.resources, planService)
+	if err != nil {
+		return err
+	}
+	defer closeReconciler()
 
 	apiServer := api.NewServerWithResources(migrationService, stores.events, planService, resourceService, metrics)
 	if authenticationConfiguration := os.Getenv("CLOUDIFY_AUTH_TOKENS_JSON"); authenticationConfiguration != "" {
@@ -109,6 +115,11 @@ func run() error {
 			runErr = fmt.Errorf("managed-resource projector stopped: %w", err)
 		}
 		stop()
+	case err := <-reconcilerErrors:
+		if !errors.Is(err, context.Canceled) {
+			runErr = fmt.Errorf("managed-resource reconciler stopped: %w", err)
+		}
+		stop()
 	case <-ctx.Done():
 		slog.Info("shutdown requested")
 	}
@@ -117,6 +128,41 @@ func run() error {
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownContext)
 	return errors.Join(runErr, shutdownErr)
+}
+
+func startResourceReconciler(
+	ctx context.Context, resourceStore resources.Store, planService *plans.Service,
+) (<-chan error, func(), error) {
+	enabled, err := strconv.ParseBool(environment("CLOUDIFY_RECONCILER_ENABLED", "false"))
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("parse CLOUDIFY_RECONCILER_ENABLED: %w", err)
+	}
+	if !enabled {
+		return nil, func() {}, nil
+	}
+	terraformEnabled, err := strconv.ParseBool(environment("CLOUDIFY_TERRAFORM_ENABLED", "false"))
+	if err != nil || !terraformEnabled {
+		return nil, func() {}, errors.New("CLOUDIFY_TERRAFORM_ENABLED must be true when reconciliation is enabled")
+	}
+	client, err := cloudrun.NewServicesClient(ctx)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("create Cloud Run client: %w", err)
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+	}
+	controller := &resources.Controller{
+		Store: resourceStore, Observer: resources.NewCloudRunObserver(client),
+		Remediator:    &resources.PlanRemediator{Plans: planService, Actor: "cloudify-reconciler"},
+		WorkerID:      fmt.Sprintf("reconciler-%s-%d", hostname, os.Getpid()),
+		LeaseDuration: 2 * time.Minute, HeartbeatInterval: 30 * time.Second,
+		PollInterval: time.Second, ReconcileInterval: time.Minute, PendingInterval: 10 * time.Second,
+	}
+	errors := make(chan error, 1)
+	go func() { errors <- controller.Run(ctx) }()
+	slog.Info("managed-resource reconciler enabled", "worker_id", controller.WorkerID)
+	return errors, func() { _ = client.Close() }, nil
 }
 
 func startResourceProjector(ctx context.Context, planStore plans.Store, resourceService *resources.Service) <-chan error {
