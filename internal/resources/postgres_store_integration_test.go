@@ -95,8 +95,14 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 		t.Fatalf("complete resource = (%#v, %v)", completed, err)
 	}
 	events, err := store.ListEvents(ctx, created.ID, 0, 10)
-	if err != nil || len(events) != 1 || events[0].State != StateInSync || string(events[0].Observed) != `{"exists":true}` {
+	if err != nil || len(events) != 1 || events[0].State != StateInSync {
 		t.Fatalf("list reconciliation events = (%#v, %v)", events, err)
+	}
+	var observed struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.Unmarshal(events[0].Observed, &observed); err != nil || !observed.Exists {
+		t.Fatalf("decode reconciliation observation = (%#v, %v)", observed, err)
 	}
 }
 
