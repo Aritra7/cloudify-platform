@@ -39,6 +39,10 @@ func TestControllerRecordsInSyncObservation(t *testing.T) {
 	if stored.State != StateInSync || stored.ObservedGeneration != stored.Generation || stored.RetryCount != 0 || stored.ClaimedBy != "" {
 		t.Fatalf("stored resource = %#v", stored)
 	}
+	events, err := store.ListEvents(context.Background(), resource.ID, 0, 10)
+	if err != nil || len(events) != 1 || events[0].State != StateInSync || events[0].Generation != resource.Generation {
+		t.Fatalf("reconciliation events = (%#v, %v)", events, err)
+	}
 }
 
 func TestControllerDetectsDeletionAndTriggersRemediation(t *testing.T) {

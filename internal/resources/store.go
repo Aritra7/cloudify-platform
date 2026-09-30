@@ -14,6 +14,7 @@ type Store interface {
 	ClaimNext(context.Context, string, time.Time, time.Time) (Resource, bool, error)
 	RenewLease(context.Context, string, string, time.Time, time.Time) error
 	Complete(context.Context, string, string, ReconcileResult, time.Time) (Resource, error)
+	ListEvents(context.Context, string, int64, int) ([]Event, error)
 }
 
 type AppliedPlanSource interface {

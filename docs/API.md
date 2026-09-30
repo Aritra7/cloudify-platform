@@ -217,6 +217,10 @@ curl --fail-with-body \
 curl --fail-with-body \
   -H 'Authorization: Bearer OPERATOR_TOKEN' \
   http://localhost:8080/v1/resources/RESOURCE_ID
+
+curl --fail-with-body \
+  -H 'Authorization: Bearer OPERATOR_TOKEN' \
+  'http://localhost:8080/v1/resources/RESOURCE_ID/events?after=0&limit=100'
 ```
 
 Each record exposes its desired deployment specification, source plan,
@@ -226,6 +230,8 @@ start in `unknown` until the GCP observer completes a reconciliation.
 When `CLOUDIFY_RECONCILER_ENABLED=true`, observed state and conditions update
 as the leased controller classifies live Cloud Run configuration. See
 [Cloud Run reconciliation](RECONCILIATION.md).
+The events endpoint returns the append-only observation history in sequence
+order, so operators can distinguish recurring drift from the latest snapshot.
 
 ## Error shape
 

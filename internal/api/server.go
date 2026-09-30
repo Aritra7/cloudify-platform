@@ -83,6 +83,7 @@ func NewServerWithResources(
 	if resourceService != nil {
 		mux.HandleFunc("GET /v1/resources", server.listResources)
 		mux.HandleFunc("GET /v1/resources/{id}", server.getResource)
+		mux.HandleFunc("GET /v1/resources/{id}/events", server.listResourceEvents)
 	}
 	server.handler = mux
 
@@ -143,6 +144,33 @@ func (s *Server) getResource(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) listResourceEvents(w http.ResponseWriter, request *http.Request) {
+	after, err := eventCursor(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
+	}
+	limit := 100
+	if value := request.URL.Query().Get("limit"); value != "" {
+		parsed, parseErr := strconv.Atoi(value)
+		if parseErr != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	events, err := s.resources.ListEvents(request.Context(), request.PathValue("id"), after, limit)
+	if errors.Is(err, resources.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not list reconciliation events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 func (s *Server) createTerraformPlan(w http.ResponseWriter, request *http.Request) {

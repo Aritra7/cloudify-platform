@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Aritra7/cloudify-platform/internal/observability"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -24,6 +25,7 @@ type Controller struct {
 	ReconcileInterval time.Duration
 	PendingInterval   time.Duration
 	Now               func() time.Time
+	Metrics           *observability.Metrics
 }
 
 func (controller *Controller) Run(ctx context.Context) error {
@@ -72,6 +74,9 @@ func (controller *Controller) RunOnce(ctx context.Context) (bool, error) {
 			if _, err := controller.Store.Complete(ctx, resource.ID, controller.WorkerID, result, controller.Now()); err != nil {
 				return true, fmt.Errorf("complete managed resource reconciliation: %w", err)
 			}
+			if controller.Metrics != nil {
+				controller.Metrics.Reconciled(string(result.State), result.RemediationAttempted, result.RemediationFailed)
+			}
 			return true, nil
 		case <-heartbeat.C:
 			heartbeatTime := controller.Now()
@@ -117,6 +122,7 @@ func (controller *Controller) reconcile(ctx context.Context, resource Resource) 
 	if resource.RemediationPolicy != RemediationAutomatic || controller.Remediator == nil {
 		return result
 	}
+	result.RemediationAttempted = true
 	err = controller.Remediator.Remediate(ctx, resource, observed)
 	if err == nil || errors.Is(err, ErrRemediationPending) {
 		result.NextReconcileAt = now.Add(controller.PendingInterval)
@@ -126,6 +132,7 @@ func (controller *Controller) reconcile(ctx context.Context, resource Resource) 
 		return result
 	}
 	if errors.Is(err, ErrRemediationTerminal) {
+		result.RemediationFailed = true
 		result.NextReconcileAt = permanentRetryTime()
 		result.Conditions = append(result.Conditions, condition(
 			"Remediation", "False", "TerraformTerminal", "Terraform remediation requires operator intervention", now,
@@ -133,6 +140,7 @@ func (controller *Controller) reconcile(ctx context.Context, resource Resource) 
 		return result
 	}
 	result.RetryCount = resource.RetryCount + 1
+	result.RemediationFailed = true
 	result.NextReconcileAt = now.Add(retryDelay(resource.ID, result.RetryCount))
 	result.Conditions = append(result.Conditions, condition(
 		"Remediation", "False", "TerraformFailed", "Terraform remediation could not be advanced", now,

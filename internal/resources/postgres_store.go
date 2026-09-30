@@ -103,7 +103,12 @@ func (store *PostgresStore) Complete(
 	if len(result.Observed) > 0 {
 		observed = []byte(result.Observed)
 	}
-	resource, err := scanResource(store.db.QueryRowContext(ctx, `
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Resource{}, fmt.Errorf("begin managed resource completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	resource, err := scanResource(tx.QueryRowContext(ctx, `
 		UPDATE managed_resources SET observed_state = $3, state = $4, observed_generation = $5,
 		conditions = $6, retry_count = $7, next_reconcile_at = $8, last_reconciled_at = $9,
 		claimed_by = NULL, lease_expires_at = NULL, updated_at = $10
@@ -113,13 +118,30 @@ func (store *PostgresStore) Complete(
 		result.RetryCount, result.NextReconcileAt, result.LastReconciledAt, now,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, getErr := store.Get(ctx, id); errors.Is(getErr, ErrNotFound) {
+		var exists bool
+		if getErr := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM managed_resources WHERE id = $1)`, id).Scan(&exists); getErr != nil {
+			return Resource{}, fmt.Errorf("check managed resource after stale completion: %w", getErr)
+		}
+		if !exists {
 			return Resource{}, ErrNotFound
 		}
 		return Resource{}, ErrLeaseLost
 	}
 	if err != nil {
 		return Resource{}, fmt.Errorf("complete managed resource reconciliation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO resource_reconciliation_events (
+			resource_id, generation, observed_generation, observed_state,
+			state, conditions, retry_count, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, resource.Generation, result.ObservedGeneration, observed,
+		result.State, conditions, result.RetryCount, result.LastReconciledAt,
+	); err != nil {
+		return Resource{}, fmt.Errorf("append reconciliation event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Resource{}, fmt.Errorf("commit managed resource reconciliation: %w", err)
 	}
 	return resource, nil
 }
@@ -153,6 +175,58 @@ func (store *PostgresStore) List(ctx context.Context, limit int) ([]Resource, er
 		return nil, fmt.Errorf("list managed resources: %w", err)
 	}
 	return result, nil
+}
+
+func (store *PostgresStore) ListEvents(ctx context.Context, id string, after int64, limit int) ([]Event, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT sequence, resource_id::text, generation, observed_generation, observed_state,
+		state, conditions, retry_count, created_at
+		FROM resource_reconciliation_events
+		WHERE resource_id = $1 AND sequence > $2 ORDER BY sequence LIMIT $3`, id, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list reconciliation events: %w", err)
+	}
+	result := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan reconciliation event: %w", err)
+		}
+		result = append(result, event)
+	}
+	rowsErr := rows.Err()
+	_ = rows.Close()
+	if rowsErr != nil {
+		return nil, fmt.Errorf("list reconciliation events: %w", rowsErr)
+	}
+	if len(result) == 0 {
+		if _, err := store.Get(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
+	var event Event
+	var observed, conditions []byte
+	if err := row.Scan(
+		&event.Sequence, &event.ResourceID, &event.Generation, &event.ObservedGeneration,
+		&observed, &event.State, &conditions, &event.RetryCount, &event.CreatedAt,
+	); err != nil {
+		return Event{}, err
+	}
+	if len(observed) > 0 {
+		event.Observed = append(json.RawMessage(nil), observed...)
+	}
+	if err := json.Unmarshal(conditions, &event.Conditions); err != nil {
+		return Event{}, fmt.Errorf("decode reconciliation event conditions: %w", err)
+	}
+	if event.Conditions == nil {
+		event.Conditions = []Condition{}
+	}
+	return event, nil
 }
 
 const resourceColumns = `

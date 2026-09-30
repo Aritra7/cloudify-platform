@@ -30,7 +30,7 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 		t.Fatalf("acquire integration-test lock: %v", err)
 	}
 	t.Cleanup(func() { _, _ = database.ExecContext(context.Background(), "SELECT pg_advisory_unlock(934857)") })
-	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS managed_resources, terraform_apply_requests, terraform_plan_approvals, terraform_plans, migration_attempts, migration_events, migrations CASCADE"); err != nil {
+	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS resource_reconciliation_events, managed_resources, terraform_apply_requests, terraform_plan_approvals, terraform_plans, migration_attempts, migration_events, migrations CASCADE"); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
 	migrationFiles, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "*.sql"))
@@ -93,6 +93,10 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 	}, reconcileAt.Add(2*time.Second))
 	if err != nil || completed.State != StateInSync || completed.ClaimedBy != "" {
 		t.Fatalf("complete resource = (%#v, %v)", completed, err)
+	}
+	events, err := store.ListEvents(ctx, created.ID, 0, 10)
+	if err != nil || len(events) != 1 || events[0].State != StateInSync || string(events[0].Observed) != `{"exists":true}` {
+		t.Fatalf("list reconciliation events = (%#v, %v)", events, err)
 	}
 }
 

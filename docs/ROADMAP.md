@@ -148,8 +148,9 @@ Status: in progress
   drift under a renewable lease.
 - [x] Trigger policy-gated Terraform remediation with exponential backoff and
   the existing approval/apply audit trail.
-- [ ] Add immutable per-reconciliation observation events and fault-injection
-  coverage for database outages.
+- [x] Add immutable per-reconciliation observation events and drift/remediation
+  metrics.
+- [ ] Add fault-injection coverage for database outages.
 
 Each resource records desired state, observed state, generation, observed
 generation, conditions, retry count, and remediation policy.

@@ -13,6 +13,7 @@ func TestMetricsRenderPrometheusCountersAndGauge(t *testing.T) {
 	metrics.WorkerFailed()
 	metrics.LeaseRenewFailed()
 	metrics.Completed("failed")
+	metrics.Reconciled("drifted", true, false)
 
 	var output bytes.Buffer
 	if err := metrics.WritePrometheus(&output); err != nil {
@@ -24,6 +25,8 @@ func TestMetricsRenderPrometheusCountersAndGauge(t *testing.T) {
 		"cloudify_worker_failures_total 1",
 		"cloudify_lease_renewal_failures_total 1",
 		"cloudify_dispatcher_inflight 1",
+		`cloudify_resource_reconciliations_total{state="drifted"} 1`,
+		"cloudify_remediation_attempts_total 1",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("metrics missing %q:\n%s", expected, output.String())

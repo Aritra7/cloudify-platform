@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sort"
 	"sync"
@@ -9,8 +10,10 @@ import (
 )
 
 type MemoryStore struct {
-	mu   sync.RWMutex
-	byID map[string]Resource
+	mu       sync.RWMutex
+	byID     map[string]Resource
+	events   map[string][]Event
+	sequence int64
 }
 
 func (store *MemoryStore) ClaimNext(_ context.Context, workerID string, now, leaseUntil time.Time) (Resource, bool, error) {
@@ -72,10 +75,37 @@ func (store *MemoryStore) Complete(_ context.Context, id, workerID string, resul
 	resource.LeaseExpiresAt = nil
 	resource.UpdatedAt = now
 	store.byID[id] = resource
+	store.sequence++
+	store.events[id] = append(store.events[id], Event{
+		Sequence: store.sequence, ResourceID: id, Generation: resource.Generation,
+		ObservedGeneration: result.ObservedGeneration, Observed: append(json.RawMessage(nil), result.Observed...),
+		State: result.State, Conditions: append([]Condition(nil), result.Conditions...),
+		RetryCount: result.RetryCount, CreatedAt: result.LastReconciledAt,
+	})
 	return resource, nil
 }
 
-func NewMemoryStore() *MemoryStore { return &MemoryStore{byID: make(map[string]Resource)} }
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{byID: make(map[string]Resource), events: make(map[string][]Event)}
+}
+
+func (store *MemoryStore) ListEvents(_ context.Context, id string, after int64, limit int) ([]Event, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if _, exists := store.byID[id]; !exists {
+		return nil, ErrNotFound
+	}
+	result := make([]Event, 0, limit)
+	for _, event := range store.events[id] {
+		if event.Sequence > after {
+			result = append(result, event)
+			if len(result) == limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
 
 func (store *MemoryStore) UpsertApplied(_ context.Context, candidate Resource) (Resource, bool, error) {
 	store.mu.Lock()

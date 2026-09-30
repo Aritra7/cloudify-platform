@@ -42,3 +42,13 @@ func (service *Service) List(ctx context.Context, limit int) ([]Resource, error)
 	}
 	return service.store.List(ctx, limit)
 }
+
+func (service *Service) ListEvents(ctx context.Context, id string, after int64, limit int) ([]Event, error) {
+	if after < 0 {
+		return nil, errors.New("event cursor must be non-negative")
+	}
+	if limit < 1 || limit > 200 {
+		limit = 100
+	}
+	return service.store.ListEvents(ctx, id, after, limit)
+}

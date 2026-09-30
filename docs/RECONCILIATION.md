@@ -35,3 +35,9 @@ lease renewal reject stale owners.
 Remediation never patches Cloud Run directly. Terraform remains the desired
 state owner, and normal approval/apply audit records identify
 `cloudify-reconciler` as the actor.
+
+Every successful controller completion also appends an immutable Postgres
+event containing the desired generation, observed generation, sanitized
+observation, classification, conditions, and retry count. The `/metrics`
+endpoint reports reconciliation totals by state plus remediation attempts and
+failures.

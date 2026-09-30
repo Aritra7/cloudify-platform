@@ -390,7 +390,8 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 
 func TestManagedResourceListAndGet(t *testing.T) {
 	t.Parallel()
-	resourceService := resources.NewService(resources.NewMemoryStore())
+	resourceStore := resources.NewMemoryStore()
+	resourceService := resources.NewService(resourceStore)
 	plan := plans.Plan{
 		ID: "plan-1", MigrationID: "7b629d1d-7602-4de6-82bd-340fc18e55b6", Status: plans.StatusApplied,
 		Specification: iac.DeploymentSpec{
@@ -418,6 +419,21 @@ func TestManagedResourceListAndGet(t *testing.T) {
 	server.Handler().ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/v1/resources/"+projected.ID, nil))
 	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"generation":1`) {
 		t.Fatalf("get response = %d: %s", getResponse.Code, getResponse.Body.String())
+	}
+	now := time.Now().UTC().Add(time.Second)
+	if _, claimed, err := resourceStore.ClaimNext(context.Background(), "reconciler", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim resource = (%v, %v)", claimed, err)
+	}
+	if _, err := resourceStore.Complete(context.Background(), projected.ID, "reconciler", resources.ReconcileResult{
+		Observed: []byte(`{"exists":true}`), State: resources.StateInSync, ObservedGeneration: 1,
+		Conditions: []resources.Condition{}, NextReconcileAt: now.Add(time.Minute), LastReconciledAt: now,
+	}, now); err != nil {
+		t.Fatalf("complete reconciliation: %v", err)
+	}
+	eventsResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(eventsResponse, httptest.NewRequest(http.MethodGet, "/v1/resources/"+projected.ID+"/events?after=0", nil))
+	if eventsResponse.Code != http.StatusOK || !strings.Contains(eventsResponse.Body.String(), `"state":"in_sync"`) {
+		t.Fatalf("events response = %d: %s", eventsResponse.Code, eventsResponse.Body.String())
 	}
 }
 

@@ -65,13 +65,27 @@ type Resource struct {
 }
 
 type ReconcileResult struct {
-	Observed           json.RawMessage
-	State              State
-	ObservedGeneration int64
-	Conditions         []Condition
-	RetryCount         int
-	NextReconcileAt    time.Time
-	LastReconciledAt   time.Time
+	Observed             json.RawMessage
+	State                State
+	ObservedGeneration   int64
+	Conditions           []Condition
+	RetryCount           int
+	NextReconcileAt      time.Time
+	LastReconciledAt     time.Time
+	RemediationAttempted bool
+	RemediationFailed    bool
+}
+
+type Event struct {
+	Sequence           int64           `json:"sequence"`
+	ResourceID         string          `json:"resource_id"`
+	Generation         int64           `json:"generation"`
+	ObservedGeneration int64           `json:"observed_generation"`
+	Observed           json.RawMessage `json:"observed,omitempty"`
+	State              State           `json:"state"`
+	Conditions         []Condition     `json:"conditions"`
+	RetryCount         int             `json:"retry_count"`
+	CreatedAt          time.Time       `json:"created_at"`
 }
 
 func appliedResourceID(spec iac.DeploymentSpec) string {

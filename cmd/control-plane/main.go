@@ -64,7 +64,7 @@ func run() error {
 		return err
 	}
 	projectorErrors := startResourceProjector(ctx, stores.plans, resourceService)
-	reconcilerErrors, closeReconciler, err := startResourceReconciler(ctx, stores.resources, planService)
+	reconcilerErrors, closeReconciler, err := startResourceReconciler(ctx, stores.resources, planService, metrics)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func run() error {
 }
 
 func startResourceReconciler(
-	ctx context.Context, resourceStore resources.Store, planService *plans.Service,
+	ctx context.Context, resourceStore resources.Store, planService *plans.Service, metrics *observability.Metrics,
 ) (<-chan error, func(), error) {
 	enabled, err := strconv.ParseBool(environment("CLOUDIFY_RECONCILER_ENABLED", "false"))
 	if err != nil {
@@ -158,6 +158,7 @@ func startResourceReconciler(
 		WorkerID:      fmt.Sprintf("reconciler-%s-%d", hostname, os.Getpid()),
 		LeaseDuration: 2 * time.Minute, HeartbeatInterval: 30 * time.Second,
 		PollInterval: time.Second, ReconcileInterval: time.Minute, PendingInterval: 10 * time.Second,
+		Metrics: metrics,
 	}
 	errors := make(chan error, 1)
 	go func() { errors <- controller.Run(ctx) }()
