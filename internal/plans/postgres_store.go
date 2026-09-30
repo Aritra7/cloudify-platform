@@ -101,7 +101,7 @@ func (store *PostgresStore) ClaimNext(ctx context.Context, workerID string, now,
 func (store *PostgresStore) RenewLease(ctx context.Context, id, workerID string, now, leaseUntil time.Time) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE terraform_plans SET lease_expires_at = $4, updated_at = $3
-		WHERE id = $1 AND claimed_by = $2 AND status = 'planning' AND lease_expires_at > $3`,
+		WHERE id = $1 AND claimed_by = $2 AND status IN ('planning', 'applying') AND lease_expires_at > $3`,
 		id, workerID, now, leaseUntil)
 	if err != nil {
 		return fmt.Errorf("renew Terraform plan lease: %w", err)
@@ -131,11 +131,12 @@ func (store *PostgresStore) Complete(
 	if status == StatusReady && !validArtifact(artifact) {
 		return Plan{}, ErrInvalidTransition
 	}
-	var jsonPath, textPath, jsonChecksum, textChecksum any
+	var jsonPath, textPath, jsonChecksum, textChecksum, binaryObjectKey, binaryChecksum any
 	var artifactCreatedAt any
 	if artifact != nil {
 		jsonPath, textPath = artifact.JSONPath, artifact.TextPath
 		jsonChecksum, textChecksum = artifact.JSONSHA256, artifact.TextSHA256
+		binaryObjectKey, binaryChecksum = artifact.BinaryObjectKey, artifact.BinarySHA256
 		artifactCreatedAt = artifact.CreatedAt
 	}
 	plan, err := scanPlan(store.db.QueryRowContext(ctx, `
@@ -143,12 +144,13 @@ func (store *PostgresStore) Complete(
 			status = $3, has_changes = CASE WHEN $3::text = 'ready' THEN $4::boolean ELSE NULL::boolean END,
 			artifact_json_path = $5, artifact_text_path = $6,
 			artifact_json_sha256 = $7, artifact_text_sha256 = $8,
-			artifact_created_at = $9, failure_message = $10,
-			claimed_by = NULL, lease_expires_at = NULL, updated_at = $11
+			artifact_binary_object_key = $9, artifact_binary_sha256 = $10,
+			artifact_created_at = $11, failure_message = $12,
+			claimed_by = NULL, lease_expires_at = NULL, updated_at = $13
 		WHERE id = $1 AND claimed_by = $2 AND status = 'planning'
 		RETURNING `+planColumns,
 		id, workerID, status, hasChanges, jsonPath, textPath, jsonChecksum, textChecksum,
-		artifactCreatedAt, failureMessage, now,
+		binaryObjectKey, binaryChecksum, artifactCreatedAt, failureMessage, now,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, getErr := store.Get(ctx, id); errors.Is(getErr, ErrNotFound) {
@@ -188,9 +190,9 @@ func (store *PostgresStore) Approve(ctx context.Context, id, actor string, now t
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO terraform_plan_approvals (
-			plan_id, actor, artifact_json_sha256, artifact_text_sha256, created_at
-		) VALUES ($1, $2, $3, $4, $5)`,
-		id, actor, current.Artifact.JSONSHA256, current.Artifact.TextSHA256, now,
+			plan_id, actor, artifact_json_sha256, artifact_text_sha256, artifact_binary_sha256, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, actor, current.Artifact.JSONSHA256, current.Artifact.TextSHA256, current.Artifact.BinarySHA256, now,
 	); err != nil {
 		return Plan{}, fmt.Errorf("record Terraform plan approval audit: %w", err)
 	}
@@ -200,20 +202,103 @@ func (store *PostgresStore) Approve(ctx context.Context, id, actor string, now t
 	return plan, nil
 }
 
+func (store *PostgresStore) QueueApply(ctx context.Context, id, actor string, now time.Time) (Plan, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Plan{}, fmt.Errorf("begin Terraform apply request: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT `+planColumns+` FROM terraform_plans WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Plan{}, ErrNotFound
+	}
+	if err != nil {
+		return Plan{}, fmt.Errorf("lock Terraform plan for apply: %w", err)
+	}
+	if current.Status != StatusApproved || !validArtifact(current.Artifact) {
+		return Plan{}, ErrInvalidTransition
+	}
+	queued, err := scanPlan(tx.QueryRowContext(ctx, `
+		UPDATE terraform_plans SET status = 'apply_queued', apply_requested_by = $2,
+		apply_requested_at = $3, updated_at = $3 WHERE id = $1 RETURNING `+planColumns, id, actor, now))
+	if err != nil {
+		return Plan{}, fmt.Errorf("queue Terraform apply: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO terraform_apply_requests (plan_id, actor, artifact_binary_sha256, created_at)
+		VALUES ($1, $2, $3, $4)`, id, actor, current.Artifact.BinarySHA256, now); err != nil {
+		return Plan{}, fmt.Errorf("record Terraform apply request audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Plan{}, fmt.Errorf("commit Terraform apply request: %w", err)
+	}
+	return queued, nil
+}
+
+func (store *PostgresStore) ClaimNextApply(ctx context.Context, workerID string, now, leaseUntil time.Time) (Plan, bool, error) {
+	plan, err := scanPlan(store.db.QueryRowContext(ctx, `
+		WITH candidate AS (
+			SELECT id FROM terraform_plans
+			WHERE status = 'apply_queued' OR (status = 'applying' AND lease_expires_at <= $2)
+			ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+		)
+		UPDATE terraform_plans AS plan
+		SET status = 'applying', claimed_by = $1, lease_expires_at = $3,
+		    apply_attempt_count = plan.apply_attempt_count + 1, updated_at = $2,
+		    failure_message = ''
+		FROM candidate WHERE plan.id = candidate.id
+		RETURNING `+qualifiedPlanColumns("plan"), workerID, now, leaseUntil))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Plan{}, false, nil
+	}
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("claim Terraform apply: %w", err)
+	}
+	return plan, true, nil
+}
+
+func (store *PostgresStore) CompleteApply(
+	ctx context.Context, id, workerID string, status Status, failureMessage string, now time.Time,
+) (Plan, error) {
+	if status != StatusApplied && status != StatusApplyFailed {
+		return Plan{}, ErrInvalidTransition
+	}
+	plan, err := scanPlan(store.db.QueryRowContext(ctx, `
+		UPDATE terraform_plans SET status = $3, failure_message = $4,
+		claimed_by = NULL, lease_expires_at = NULL, updated_at = $5
+		WHERE id = $1 AND claimed_by = $2 AND status = 'applying'
+		RETURNING `+planColumns, id, workerID, status, failureMessage, now))
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, getErr := store.Get(ctx, id); errors.Is(getErr, ErrNotFound) {
+			return Plan{}, ErrNotFound
+		}
+		return Plan{}, ErrLeaseLost
+	}
+	if err != nil {
+		return Plan{}, fmt.Errorf("complete Terraform apply: %w", err)
+	}
+	return plan, nil
+}
+
 const planColumns = `
 	id::text, migration_id::text, status, specification, policy, has_changes,
 	artifact_json_path, artifact_text_path, artifact_json_sha256, artifact_text_sha256,
-	artifact_created_at, failure_message, attempt_count, approved_by, approved_at,
+	artifact_binary_object_key, artifact_binary_sha256, artifact_created_at, failure_message,
+	attempt_count, apply_attempt_count, approved_by, approved_at, apply_requested_by, apply_requested_at,
 	created_at, updated_at, idempotency_key, request_hash, claimed_by, lease_expires_at`
 
 func qualifiedPlanColumns(alias string) string {
-	return fmt.Sprintf(`
+	format := `
 	%s.id::text, %s.migration_id::text, %s.status, %s.specification, %s.policy, %s.has_changes,
 	%s.artifact_json_path, %s.artifact_text_path, %s.artifact_json_sha256, %s.artifact_text_sha256,
-	%s.artifact_created_at, %s.failure_message, %s.attempt_count, %s.approved_by, %s.approved_at,
-	%s.created_at, %s.updated_at, %s.idempotency_key, %s.request_hash, %s.claimed_by, %s.lease_expires_at`,
-		alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias,
-		alias, alias, alias, alias, alias, alias, alias, alias, alias, alias)
+	%s.artifact_binary_object_key, %s.artifact_binary_sha256, %s.artifact_created_at, %s.failure_message,
+	%s.attempt_count, %s.apply_attempt_count, %s.approved_by, %s.approved_at, %s.apply_requested_by, %s.apply_requested_at,
+	%s.created_at, %s.updated_at, %s.idempotency_key, %s.request_hash, %s.claimed_by, %s.lease_expires_at`
+	arguments := make([]any, 26)
+	for index := range arguments {
+		arguments[index] = alias
+	}
+	return fmt.Sprintf(format, arguments...)
 }
 
 type rowScanner interface{ Scan(...any) error }
@@ -222,13 +307,14 @@ func scanPlan(row rowScanner) (Plan, error) {
 	var plan Plan
 	var specification, policy []byte
 	var hasChanges sql.NullBool
-	var jsonPath, textPath, jsonChecksum, textChecksum sql.NullString
-	var artifactCreatedAt, approvedAt, leaseExpiresAt sql.NullTime
-	var approvedBy, claimedBy sql.NullString
+	var jsonPath, textPath, jsonChecksum, textChecksum, binaryObjectKey, binaryChecksum sql.NullString
+	var artifactCreatedAt, approvedAt, applyRequestedAt, leaseExpiresAt sql.NullTime
+	var approvedBy, applyRequestedBy, claimedBy sql.NullString
 	if err := row.Scan(
 		&plan.ID, &plan.MigrationID, &plan.Status, &specification, &policy, &hasChanges,
-		&jsonPath, &textPath, &jsonChecksum, &textChecksum, &artifactCreatedAt,
-		&plan.FailureMessage, &plan.AttemptCount, &approvedBy, &approvedAt,
+		&jsonPath, &textPath, &jsonChecksum, &textChecksum,
+		&binaryObjectKey, &binaryChecksum, &artifactCreatedAt, &plan.FailureMessage,
+		&plan.AttemptCount, &plan.ApplyAttemptCount, &approvedBy, &approvedAt, &applyRequestedBy, &applyRequestedAt,
 		&plan.CreatedAt, &plan.UpdatedAt, &plan.IdempotencyKey, &plan.RequestHash, &claimedBy, &leaseExpiresAt,
 	); err != nil {
 		return Plan{}, err
@@ -246,6 +332,7 @@ func scanPlan(row rowScanner) (Plan, error) {
 		plan.Artifact = &iac.ArtifactMetadata{
 			MigrationID: plan.MigrationID, JSONPath: jsonPath.String, TextPath: textPath.String,
 			JSONSHA256: jsonChecksum.String, TextSHA256: textChecksum.String, CreatedAt: artifactCreatedAt.Time,
+			BinaryObjectKey: binaryObjectKey.String, BinarySHA256: binaryChecksum.String,
 		}
 	}
 	if approvedBy.Valid {
@@ -253,6 +340,12 @@ func scanPlan(row rowScanner) (Plan, error) {
 	}
 	if approvedAt.Valid {
 		plan.ApprovedAt = timePointer(approvedAt.Time)
+	}
+	if applyRequestedBy.Valid {
+		plan.ApplyRequestedBy = applyRequestedBy.String
+	}
+	if applyRequestedAt.Valid {
+		plan.ApplyRequestedAt = timePointer(applyRequestedAt.Time)
 	}
 	if claimedBy.Valid {
 		plan.ClaimedBy = claimedBy.String

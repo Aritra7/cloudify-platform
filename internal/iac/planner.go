@@ -18,6 +18,7 @@ import (
 
 const planFilename = "cloudify.tfplan"
 const maxTerraformOutputBytes = 1 << 20
+const maxBinaryPlanBytes = 32 << 20
 
 var stateBucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$`)
 
@@ -27,6 +28,7 @@ type TerraformCLI interface {
 	SetStderr(io.Writer)
 	Init(context.Context, ...tfexec.InitOption) error
 	Plan(context.Context, ...tfexec.PlanOption) (bool, error)
+	Apply(context.Context, ...tfexec.ApplyOption) error
 	ShowPlanFile(context.Context, string, ...tfexec.ShowOption) (*jsonplan.Plan, error)
 	ShowPlanFileRaw(context.Context, string, ...tfexec.ShowOption) (string, error)
 }
@@ -114,16 +116,37 @@ func (planner *Planner) Plan(ctx context.Context, workDirectory string, spec Dep
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("read human-readable Terraform plan: %w", err)
 	}
+	binaryPlan, err := readBoundedFile(planPath, maxBinaryPlanBytes)
+	if err != nil {
+		return PlanResult{}, fmt.Errorf("read binary Terraform plan: %w", err)
+	}
 	metadata, err := planner.Artifacts.Save(ctx, PlanArtifact{
 		MigrationID: spec.MigrationID,
 		JSON:        append(structuredJSON, '\n'),
 		Text:        []byte(humanReadable),
+		Binary:      binaryPlan,
 		CreatedAt:   planner.Now(),
 	})
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("persist Terraform plan artifacts: %w", err)
 	}
 	return PlanResult{HasChanges: hasChanges, Artifact: metadata}, nil
+}
+
+func readBoundedFile(path string, maximum int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(contents)) > maximum {
+		return nil, errors.New("file exceeds maximum allowed size")
+	}
+	return contents, nil
 }
 
 type boundedWriter struct {

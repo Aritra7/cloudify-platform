@@ -14,4 +14,7 @@ type Store interface {
 	RenewLease(context.Context, string, string, time.Time, time.Time) error
 	Complete(context.Context, string, string, Status, bool, *iac.ArtifactMetadata, string, time.Time) (Plan, error)
 	Approve(context.Context, string, string, time.Time) (Plan, error)
+	QueueApply(context.Context, string, string, time.Time) (Plan, error)
+	ClaimNextApply(context.Context, string, time.Time, time.Time) (Plan, bool, error)
+	CompleteApply(context.Context, string, string, Status, string, time.Time) (Plan, error)
 }

@@ -35,10 +35,13 @@ rewriting Cloudify's migration intelligence. See the
 - A validated deployment specification now renders a deterministic Cloud Run
   Terraform module. The Go planner uses `terraform-exec`, GCS state locking,
   immutable image digests, Secret Manager references, and checksummed plan
-  artifacts; apply remains gated pending authenticated exact-plan execution.
+  artifacts.
 - Terraform plan requests are durable and idempotent, execute under renewable
   worker leases, pass cost/exposure policy before execution, and require an
-  auditable checksum-bound approval before any future apply.
+  auditable checksum-bound approval before apply.
+- Scoped bearer-token roles protect plan, approval, and apply operations. The
+  apply dispatcher decrypts and verifies the approval-bound binary plan before
+  executing that exact plan under a renewable lease.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 

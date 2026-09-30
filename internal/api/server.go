@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Aritra7/cloudify-platform/internal/auth"
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
@@ -64,13 +65,31 @@ func NewServerWithPlans(
 		mux.HandleFunc("POST /v1/migrations/{id}/plans", server.createTerraformPlan)
 		mux.HandleFunc("GET /v1/plans/{id}", server.getTerraformPlan)
 		mux.HandleFunc("POST /v1/plans/{id}/approve", server.approveTerraformPlan)
+		mux.HandleFunc("POST /v1/plans/{id}/apply", server.applyTerraformPlan)
 	}
 	server.handler = mux
 
 	return server
 }
 
+// NewAuthenticatedServer protects all non-probe endpoints with bearer-token authentication.
+func NewAuthenticatedServer(
+	migrationService *migrations.Service,
+	eventStore events.Store,
+	planService *plans.Service,
+	metricSet *observability.Metrics,
+	authenticator *auth.BearerAuthenticator,
+) *Server {
+	server := NewServerWithPlans(migrationService, eventStore, planService, metricSet)
+	server.handler = authenticator.Middleware(server.handler)
+	return server
+}
+
 func (s *Server) createTerraformPlan(w http.ResponseWriter, request *http.Request) {
+	if _, err := auth.RequireRole(request.Context(), auth.RolePlanner, auth.RoleOperator); errors.Is(err, auth.ErrForbidden) {
+		writeError(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
 	migrationID := request.PathValue("id")
 	migration, err := s.migrations.Get(request.Context(), migrationID)
 	if errors.Is(err, migrations.ErrNotFound) {
@@ -132,7 +151,14 @@ func (s *Server) getTerraformPlan(w http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) approveTerraformPlan(w http.ResponseWriter, request *http.Request) {
-	plan, err := s.plans.Approve(request.Context(), request.PathValue("id"), request.Header.Get("X-Cloudify-Actor"))
+	actor := request.Header.Get("X-Cloudify-Actor")
+	if principal, authErr := auth.RequireRole(request.Context(), auth.RoleApprover, auth.RoleOperator); authErr == nil {
+		actor = principal.Actor
+	} else if errors.Is(authErr, auth.ErrForbidden) {
+		writeError(w, http.StatusForbidden, "forbidden", authErr.Error())
+		return
+	}
+	plan, err := s.plans.Approve(request.Context(), request.PathValue("id"), actor)
 	switch {
 	case errors.Is(err, plans.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
@@ -142,6 +168,29 @@ func (s *Server) approveTerraformPlan(w http.ResponseWriter, request *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid_approval", err.Error())
 	default:
 		writeJSON(w, http.StatusOK, plan)
+	}
+}
+
+func (s *Server) applyTerraformPlan(w http.ResponseWriter, request *http.Request) {
+	principal, err := auth.RequireRole(request.Context(), auth.RoleOperator)
+	if errors.Is(err, auth.ErrUnauthenticated) {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", err.Error())
+		return
+	}
+	if errors.Is(err, auth.ErrForbidden) {
+		writeError(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
+	plan, err := s.plans.QueueApply(request.Context(), request.PathValue("id"), principal.Actor)
+	switch {
+	case errors.Is(err, plans.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, plans.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid_state", "only an approved plan can be applied")
+	case err != nil:
+		writeError(w, http.StatusBadRequest, "invalid_apply", err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, plan)
 	}
 }
 

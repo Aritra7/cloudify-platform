@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Aritra7/cloudify-platform/internal/auth"
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
@@ -319,7 +322,13 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 	}
 	planStore := plans.NewMemoryStore()
 	planService := plans.NewService(planStore, plans.DefaultPolicy())
-	server := NewServerWithPlans(migrationService, events.NewMemoryStore(), planService, &observability.Metrics{})
+	token := "test-operator-token"
+	tokenDigest := sha256.Sum256([]byte(token))
+	authenticator, err := auth.NewBearerAuthenticator(`[{"actor":"operator@example.com","token_sha256":"` + fmt.Sprintf("%x", tokenDigest) + `","roles":["planner","approver","operator"]}]`)
+	if err != nil {
+		t.Fatalf("create authenticator: %v", err)
+	}
+	server := NewAuthenticatedServer(migrationService, events.NewMemoryStore(), planService, &observability.Metrics{}, authenticator)
 	specification := iac.DeploymentSpec{
 		Version: iac.SpecificationVersion, ProjectID: "example-project", Region: "us-central1", ServiceName: "example-api",
 		Image:               "us-docker.pkg.dev/example-project/apps/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -332,6 +341,7 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 	}
 	createRequest := httptest.NewRequest(http.MethodPost, "/v1/migrations/"+migration.ID+"/plans", strings.NewReader(string(body)))
 	createRequest.Header.Set("Idempotency-Key", "plan-request")
+	createRequest.Header.Set("Authorization", "Bearer "+token)
 	createResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(createResponse, createRequest)
 	if createResponse.Code != http.StatusAccepted {
@@ -346,14 +356,16 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 	}
 	artifact := &iac.ArtifactMetadata{
 		MigrationID: migration.ID, JSONPath: "/plan.json", TextPath: "/plan.txt", CreatedAt: now,
-		JSONSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TextSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		JSONSHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TextSHA256:      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		BinaryObjectKey: migration.ID + "/plan.enc",
+		BinarySHA256:    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	}
 	if _, err := planStore.Complete(context.Background(), created.ID, "terraform-worker", plans.StatusReady, true, artifact, "", now); err != nil {
 		t.Fatalf("complete plan: %v", err)
 	}
 	approveRequest := httptest.NewRequest(http.MethodPost, "/v1/plans/"+created.ID+"/approve", nil)
-	approveRequest.Header.Set("X-Cloudify-Actor", "reviewer@example.com")
+	approveRequest.Header.Set("Authorization", "Bearer "+token)
 	approveResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(approveResponse, approveRequest)
 	if approveResponse.Code != http.StatusOK {
@@ -363,8 +375,15 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 	if err := json.NewDecoder(approveResponse.Body).Decode(&approved); err != nil {
 		t.Fatalf("decode approved plan: %v", err)
 	}
-	if approved.Status != plans.StatusApproved || approved.ApprovedBy != "reviewer@example.com" {
+	if approved.Status != plans.StatusApproved || approved.ApprovedBy != "operator@example.com" {
 		t.Fatalf("approved plan = %#v", approved)
+	}
+	applyRequest := httptest.NewRequest(http.MethodPost, "/v1/plans/"+created.ID+"/apply", nil)
+	applyRequest.Header.Set("Authorization", "Bearer "+token)
+	applyResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(applyResponse, applyRequest)
+	if applyResponse.Code != http.StatusAccepted {
+		t.Fatalf("apply status = %d: %s", applyResponse.Code, applyResponse.Body.String())
 	}
 }
 

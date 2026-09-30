@@ -66,6 +66,14 @@ func (service *Service) Approve(ctx context.Context, id, actor string) (Plan, er
 	return service.store.Approve(ctx, id, actor, service.now())
 }
 
+func (service *Service) QueueApply(ctx context.Context, id, actor string) (Plan, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" || len(actor) > 200 {
+		return Plan{}, fmt.Errorf("apply actor is required and must not exceed 200 characters")
+	}
+	return service.store.QueueApply(ctx, id, actor, service.now())
+}
+
 func randomID() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

@@ -30,7 +30,7 @@ func TestPostgresPlanLifecycle(t *testing.T) {
 		t.Fatalf("acquire integration-test lock: %v", err)
 	}
 	t.Cleanup(func() { _, _ = database.ExecContext(context.Background(), "SELECT pg_advisory_unlock(934857)") })
-	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS terraform_plan_approvals, terraform_plans, migration_attempts, migration_events, migrations CASCADE"); err != nil {
+	if _, err := database.ExecContext(ctx, "DROP TABLE IF EXISTS terraform_apply_requests, terraform_plan_approvals, terraform_plans, migration_attempts, migration_events, migrations CASCADE"); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
 	migrationFiles, err := filepath.Glob(filepath.Join("..", "..", "db", "migrations", "*.sql"))
@@ -80,9 +80,11 @@ func TestPostgresPlanLifecycle(t *testing.T) {
 	}
 	artifact := &iac.ArtifactMetadata{
 		MigrationID: migration.ID, JSONPath: "/artifacts/plan.json", TextPath: "/artifacts/plan.txt",
-		JSONSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TextSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		CreatedAt:  now,
+		JSONSHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TextSHA256:      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		BinaryObjectKey: migration.ID + "/plan.enc",
+		BinarySHA256:    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		CreatedAt:       now,
 	}
 	ready, err := store.Complete(ctx, created.ID, "worker-1", StatusReady, true, artifact, "", now.Add(2*time.Second))
 	if err != nil {
@@ -97,5 +99,17 @@ func TestPostgresPlanLifecycle(t *testing.T) {
 	}
 	if approved.Status != StatusApproved || approved.ApprovedBy != "reviewer@example.com" {
 		t.Fatalf("approved plan = %#v", approved)
+	}
+	queuedApply, err := service.QueueApply(ctx, created.ID, "operator@example.com")
+	if err != nil || queuedApply.Status != StatusApplyQueued {
+		t.Fatalf("queue apply = (%#v, %v)", queuedApply, err)
+	}
+	applying, ok, err := store.ClaimNextApply(ctx, "apply-worker-1", now.Add(3*time.Second), now.Add(3*time.Minute))
+	if err != nil || !ok || applying.ID != created.ID {
+		t.Fatalf("claim apply = (%#v, %v, %v)", applying, ok, err)
+	}
+	applied, err := store.CompleteApply(ctx, created.ID, "apply-worker-1", StatusApplied, "", now.Add(4*time.Second))
+	if err != nil || applied.Status != StatusApplied {
+		t.Fatalf("complete apply = (%#v, %v)", applied, err)
 	}
 }

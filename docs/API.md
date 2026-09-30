@@ -24,6 +24,29 @@ go run ./cmd/control-plane
 
 The process verifies database connectivity before accepting requests.
 
+## Authentication
+
+Set `CLOUDIFY_AUTH_TOKENS_JSON` to enable bearer authentication for every
+endpoint except `/healthz` and `/readyz`. Configuration contains only SHA-256
+digests of high-entropy service tokens:
+
+```sh
+export CLOUDIFY_AUTH_TOKENS_JSON='[
+  {
+    "actor": "platform-operator@example.com",
+    "token_sha256": "64_LOWERCASE_HEX_CHARACTERS",
+    "roles": ["planner", "approver", "operator"]
+  }
+]'
+```
+
+Requests pass the plaintext token in `Authorization: Bearer TOKEN`. The
+control plane hashes it and compares digests in constant time. The `planner`
+role can submit plans, `approver` can approve them, and only `operator` can
+queue an apply. This service-token implementation provides a tested local and
+machine-to-machine boundary; workload-identity/OIDC validation remains the
+production integration target.
+
 ## Create a migration
 
 ```sh
@@ -148,23 +171,37 @@ Read its status and checksummed artifacts with:
 curl --fail-with-body http://localhost:8080/v1/plans/PLAN_ID
 ```
 
-Plan states are `queued`, `planning`, `ready`, `rejected`, `failed`, and
-`approved`. Planning uses the same lease and stale-owner principles as
-migration execution.
+Plan states are `queued`, `planning`, `ready`, `rejected`, `failed`,
+`approved`, `apply_queued`, `applying`, `applied`, and `apply_failed`.
+Planning and apply use the same lease and stale-owner principles as migration
+execution.
 
 ## Approve a Terraform plan
 
 ```sh
 curl --fail-with-body \
   -X POST http://localhost:8080/v1/plans/PLAN_ID/approve \
-  -H 'X-Cloudify-Actor: reviewer@example.com'
+  -H 'Authorization: Bearer APPROVER_TOKEN'
 ```
 
 Only a policy-compliant `ready` plan with persisted artifacts can be approved.
 Postgres records the actor, timestamp, and exact artifact checksums in an
-append-only approval row. `X-Cloudify-Actor` is an audit propagation field, not
-authentication; production deployment still requires the planned identity and
-authorization middleware.
+append-only approval row. The actor comes from the authenticated principal,
+not from a caller-controlled audit header.
+
+## Apply an approved Terraform plan
+
+```sh
+curl --fail-with-body \
+  -X POST http://localhost:8080/v1/plans/PLAN_ID/apply \
+  -H 'Authorization: Bearer OPERATOR_TOKEN'
+```
+
+The endpoint requires the `operator` role and returns `202 Accepted`. It moves
+an `approved` plan through `apply_queued`, `applying`, and either `applied` or
+`apply_failed`. The apply worker decrypts, checksum-verifies, and executes the
+exact binary plan covered by approval; it never silently creates a replacement
+plan.
 
 ## Error shape
 

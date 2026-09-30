@@ -76,13 +76,79 @@ func (store *MemoryStore) RenewLease(_ context.Context, id, workerID string, now
 	if !exists {
 		return ErrNotFound
 	}
-	if plan.Status != StatusPlanning || plan.ClaimedBy != workerID || plan.LeaseExpiresAt == nil || !plan.LeaseExpiresAt.After(now) {
+	if (plan.Status != StatusPlanning && plan.Status != StatusApplying) || plan.ClaimedBy != workerID || plan.LeaseExpiresAt == nil || !plan.LeaseExpiresAt.After(now) {
 		return ErrLeaseLost
 	}
 	plan.LeaseExpiresAt = timePointer(leaseUntil)
 	plan.UpdatedAt = now
 	store.byID[id] = plan
 	return nil
+}
+
+func (store *MemoryStore) QueueApply(_ context.Context, id, actor string, now time.Time) (Plan, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	plan, exists := store.byID[id]
+	if !exists {
+		return Plan{}, ErrNotFound
+	}
+	if plan.Status != StatusApproved || !validArtifact(plan.Artifact) {
+		return Plan{}, ErrInvalidTransition
+	}
+	plan.Status = StatusApplyQueued
+	plan.ApplyRequestedBy = actor
+	plan.ApplyRequestedAt = timePointer(now)
+	plan.UpdatedAt = now
+	store.byID[id] = plan
+	return plan, nil
+}
+
+func (store *MemoryStore) ClaimNextApply(_ context.Context, workerID string, now, leaseUntil time.Time) (Plan, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var selected Plan
+	found := false
+	for _, plan := range store.byID {
+		eligible := plan.Status == StatusApplyQueued ||
+			(plan.Status == StatusApplying && plan.LeaseExpiresAt != nil && !plan.LeaseExpiresAt.After(now))
+		if eligible && (!found || plan.CreatedAt.Before(selected.CreatedAt)) {
+			selected, found = plan, true
+		}
+	}
+	if !found {
+		return Plan{}, false, nil
+	}
+	selected.Status = StatusApplying
+	selected.ClaimedBy = workerID
+	selected.LeaseExpiresAt = timePointer(leaseUntil)
+	selected.ApplyAttemptCount++
+	selected.UpdatedAt = now
+	store.byID[selected.ID] = selected
+	return selected, true, nil
+}
+
+func (store *MemoryStore) CompleteApply(
+	_ context.Context, id, workerID string, status Status, failureMessage string, now time.Time,
+) (Plan, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	plan, exists := store.byID[id]
+	if !exists {
+		return Plan{}, ErrNotFound
+	}
+	if plan.Status != StatusApplying || plan.ClaimedBy != workerID {
+		return Plan{}, ErrLeaseLost
+	}
+	if status != StatusApplied && status != StatusApplyFailed {
+		return Plan{}, ErrInvalidTransition
+	}
+	plan.Status = status
+	plan.FailureMessage = failureMessage
+	plan.ClaimedBy = ""
+	plan.LeaseExpiresAt = nil
+	plan.UpdatedAt = now
+	store.byID[id] = plan
+	return plan, nil
 }
 
 func (store *MemoryStore) Complete(

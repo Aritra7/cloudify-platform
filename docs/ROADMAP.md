@@ -104,12 +104,13 @@ Status: in progress
 - [x] Validated, deterministic deployment-spec renderer.
 - [x] `terraform-exec` plan runner with GCS backend configuration and bounded
   command output.
-- [x] Checksummed JSON and human-readable plan artifacts; binary plans are
-  removed after export.
+- [x] Checksummed JSON and human-readable plan artifacts plus encrypted binary
+  plans for exact apply; plaintext workspace copies are removed.
 - [x] CI formatting and validation for Terraform modules.
 - [x] Durable plan metadata, policy evaluation, leased execution, and auditable
   approval.
-- [ ] Authenticated authorization and guarded apply of the exact approved plan.
+- [x] Role-authenticated, audited, leased apply of the exact approved plan.
+- [ ] Workload-identity/OIDC authentication and cloud object artifact storage.
 
 Implement versioned modules for:
 

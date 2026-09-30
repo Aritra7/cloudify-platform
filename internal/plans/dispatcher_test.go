@@ -42,8 +42,10 @@ func TestDispatcherStoresReadyPlan(t *testing.T) {
 func testArtifact(migrationID string) iac.ArtifactMetadata {
 	return iac.ArtifactMetadata{
 		MigrationID: migrationID, JSONPath: "/plan.json", TextPath: "/plan.txt",
-		JSONSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TextSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		JSONSHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TextSHA256:      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		BinaryObjectKey: migrationID + "/plan.enc",
+		BinarySHA256:    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	}
 }
 

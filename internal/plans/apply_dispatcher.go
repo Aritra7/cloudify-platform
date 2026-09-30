@@ -11,13 +11,13 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/iac"
 )
 
-type Planner interface {
-	Plan(context.Context, string, iac.DeploymentSpec) (iac.PlanResult, error)
+type Applier interface {
+	Apply(context.Context, string, iac.DeploymentSpec, iac.ArtifactMetadata) error
 }
 
-type Dispatcher struct {
+type ApplyDispatcher struct {
 	Store             Store
-	Planner           Planner
+	Applier           Applier
 	WorkerID          string
 	WorkRoot          string
 	LeaseDuration     time.Duration
@@ -26,7 +26,7 @@ type Dispatcher struct {
 	Now               func() time.Time
 }
 
-func (dispatcher *Dispatcher) Run(ctx context.Context) error {
+func (dispatcher *ApplyDispatcher) Run(ctx context.Context) error {
 	if err := dispatcher.validate(); err != nil {
 		return err
 	}
@@ -51,52 +51,49 @@ func (dispatcher *Dispatcher) Run(ctx context.Context) error {
 	}
 }
 
-func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
+func (dispatcher *ApplyDispatcher) RunOnce(ctx context.Context) (bool, error) {
 	if err := dispatcher.validate(); err != nil {
 		return false, err
 	}
 	now := dispatcher.Now()
-	plan, claimed, err := dispatcher.Store.ClaimNext(ctx, dispatcher.WorkerID, now, now.Add(dispatcher.LeaseDuration))
+	plan, claimed, err := dispatcher.Store.ClaimNextApply(ctx, dispatcher.WorkerID, now, now.Add(dispatcher.LeaseDuration))
 	if err != nil || !claimed {
 		return claimed, err
 	}
-	workspace, err := os.MkdirTemp(dispatcher.WorkRoot, "cloudify-plan-"+plan.ID+"-")
+	if !validArtifact(plan.Artifact) {
+		_, completeErr := dispatcher.Store.CompleteApply(
+			ctx, plan.ID, dispatcher.WorkerID, StatusApplyFailed, "Terraform apply failed", dispatcher.Now(),
+		)
+		return true, completeErr
+	}
+	workspace, err := os.MkdirTemp(dispatcher.WorkRoot, "cloudify-apply-"+plan.ID+"-")
 	if err != nil {
-		_, completeErr := dispatcher.Store.Complete(ctx, plan.ID, dispatcher.WorkerID, StatusFailed, false, nil, "create isolated Terraform workspace", dispatcher.Now())
+		_, completeErr := dispatcher.Store.CompleteApply(ctx, plan.ID, dispatcher.WorkerID, StatusApplyFailed, "Terraform apply failed", dispatcher.Now())
 		return true, errors.Join(err, completeErr)
 	}
 	defer func() { _ = os.RemoveAll(workspace) }()
 
-	type result struct {
-		plan iac.PlanResult
-		err  error
-	}
-	results := make(chan result, 1)
-	planContext, cancel := context.WithCancel(ctx)
+	results := make(chan error, 1)
+	applyContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		planned, planErr := dispatcher.Planner.Plan(planContext, workspace, plan.Specification)
-		results <- result{plan: planned, err: planErr}
+		results <- dispatcher.Applier.Apply(applyContext, workspace, plan.Specification, *plan.Artifact)
 	}()
 	heartbeat := time.NewTicker(dispatcher.HeartbeatInterval)
 	defer heartbeat.Stop()
 	for {
 		select {
-		case completed := <-results:
-			status := StatusReady
-			var artifact *iac.ArtifactMetadata
+		case applyErr := <-results:
+			status := StatusApplied
 			failureMessage := ""
-			if completed.err != nil {
-				status = StatusFailed
-				failureMessage = "Terraform planning failed"
-			} else {
-				artifact = &completed.plan.Artifact
+			if applyErr != nil {
+				status = StatusApplyFailed
+				failureMessage = "Terraform apply failed"
 			}
-			if _, err := dispatcher.Store.Complete(
-				ctx, plan.ID, dispatcher.WorkerID, status, completed.plan.HasChanges,
-				artifact, failureMessage, dispatcher.Now(),
+			if _, err := dispatcher.Store.CompleteApply(
+				ctx, plan.ID, dispatcher.WorkerID, status, failureMessage, dispatcher.Now(),
 			); err != nil {
-				return true, fmt.Errorf("complete Terraform plan: %w", err)
+				return true, fmt.Errorf("complete Terraform apply: %w", err)
 			}
 			return true, nil
 		case <-heartbeat.C:
@@ -106,7 +103,7 @@ func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 			); err != nil {
 				cancel()
 				<-results
-				return true, fmt.Errorf("renew Terraform plan lease: %w", err)
+				return true, fmt.Errorf("renew Terraform apply lease: %w", err)
 			}
 		case <-ctx.Done():
 			cancel()
@@ -116,18 +113,18 @@ func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 	}
 }
 
-func (dispatcher *Dispatcher) validate() error {
-	if dispatcher.Store == nil || dispatcher.Planner == nil || dispatcher.WorkerID == "" {
-		return errors.New("plan dispatcher requires a store, planner, and worker ID")
+func (dispatcher *ApplyDispatcher) validate() error {
+	if dispatcher.Store == nil || dispatcher.Applier == nil || dispatcher.WorkerID == "" {
+		return errors.New("apply dispatcher requires a store, applier, and worker ID")
 	}
 	if dispatcher.WorkRoot == "" || !filepath.IsAbs(dispatcher.WorkRoot) {
-		return errors.New("plan dispatcher work root must be an absolute path")
+		return errors.New("apply dispatcher work root must be an absolute path")
 	}
 	if dispatcher.LeaseDuration <= 0 || dispatcher.HeartbeatInterval <= 0 || dispatcher.PollInterval <= 0 {
-		return errors.New("plan dispatcher durations must be positive")
+		return errors.New("apply dispatcher durations must be positive")
 	}
 	if dispatcher.HeartbeatInterval >= dispatcher.LeaseDuration {
-		return errors.New("plan dispatcher heartbeat must be shorter than its lease")
+		return errors.New("apply dispatcher heartbeat must be shorter than its lease")
 	}
 	if dispatcher.Now == nil {
 		dispatcher.Now = func() time.Time { return time.Now().UTC() }

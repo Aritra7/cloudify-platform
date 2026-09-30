@@ -3,6 +3,8 @@ package iac
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,8 +13,21 @@ import (
 )
 
 type fakeTerraformCLI struct {
-	initialized bool
-	planned     bool
+	initialized   bool
+	planned       bool
+	applied       bool
+	appliedPlan   []byte
+	workDirectory string
+}
+
+func (cli *fakeTerraformCLI) Apply(context.Context, ...tfexec.ApplyOption) error {
+	cli.applied = true
+	contents, err := os.ReadFile(filepath.Join(cli.workDirectory, planFilename))
+	if err != nil {
+		return err
+	}
+	cli.appliedPlan = contents
+	return nil
 }
 
 func (cli *fakeTerraformCLI) SetStdout(io.Writer) {}
@@ -23,6 +38,9 @@ func (cli *fakeTerraformCLI) Init(context.Context, ...tfexec.InitOption) error {
 }
 func (cli *fakeTerraformCLI) Plan(context.Context, ...tfexec.PlanOption) (bool, error) {
 	cli.planned = true
+	if err := os.WriteFile(filepath.Join(cli.workDirectory, planFilename), []byte("binary-plan"), 0o600); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 func (cli *fakeTerraformCLI) ShowPlanFile(context.Context, string, ...tfexec.ShowOption) (*jsonplan.Plan, error) {
@@ -49,7 +67,8 @@ func TestPlannerRendersRunsAndStoresPlanEvidence(t *testing.T) {
 		BinaryPath:  "/usr/local/bin/terraform",
 		StateBucket: "cloudify-terraform-state",
 		StatePrefix: "migrations",
-		NewCLI: func(string, string) (TerraformCLI, error) {
+		NewCLI: func(workDirectory, _ string) (TerraformCLI, error) {
+			cli.workDirectory = workDirectory
 			return cli, nil
 		},
 		Now: func() time.Time { return time.Unix(100, 0).UTC() },
@@ -61,7 +80,7 @@ func TestPlannerRendersRunsAndStoresPlanEvidence(t *testing.T) {
 	if !result.HasChanges || !cli.initialized || !cli.planned {
 		t.Fatalf("result = %#v, initialized=%v planned=%v", result, cli.initialized, cli.planned)
 	}
-	if artifacts.artifact.MigrationID != "migration-123" || len(artifacts.artifact.JSON) == 0 || len(artifacts.artifact.Text) == 0 {
+	if artifacts.artifact.MigrationID != "migration-123" || len(artifacts.artifact.JSON) == 0 || len(artifacts.artifact.Text) == 0 || len(artifacts.artifact.Binary) == 0 {
 		t.Fatalf("artifact = %#v", artifacts.artifact)
 	}
 }

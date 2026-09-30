@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/api"
+	"github.com/Aritra7/cloudify-platform/internal/auth"
 	"github.com/Aritra7/cloudify-platform/internal/events"
 	"github.com/Aritra7/cloudify-platform/internal/executor"
 	"github.com/Aritra7/cloudify-platform/internal/iac"
@@ -59,9 +61,17 @@ func run() error {
 		return err
 	}
 
+	apiServer := api.NewServerWithPlans(migrationService, stores.events, planService, metrics)
+	if authenticationConfiguration := os.Getenv("CLOUDIFY_AUTH_TOKENS_JSON"); authenticationConfiguration != "" {
+		authenticator, err := auth.NewBearerAuthenticator(authenticationConfiguration)
+		if err != nil {
+			return fmt.Errorf("configure API authentication: %w", err)
+		}
+		apiServer = api.NewAuthenticatedServer(migrationService, stores.events, planService, metrics, authenticator)
+	}
 	server := &http.Server{
 		Addr:              address(),
-		Handler:           api.NewServerWithPlans(migrationService, stores.events, planService, metrics).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -109,6 +119,9 @@ func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, 
 	if !enabled {
 		return nil, nil
 	}
+	if os.Getenv("CLOUDIFY_AUTH_TOKENS_JSON") == "" {
+		return nil, errors.New("CLOUDIFY_AUTH_TOKENS_JSON is required when Terraform is enabled")
+	}
 	stateBucket := os.Getenv("CLOUDIFY_TERRAFORM_STATE_BUCKET")
 	if stateBucket == "" {
 		return nil, errors.New("CLOUDIFY_TERRAFORM_STATE_BUCKET is required when Terraform is enabled")
@@ -125,6 +138,10 @@ func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve Terraform artifact root: %w", err)
 	}
+	encryptionKey, err := base64.StdEncoding.DecodeString(os.Getenv("CLOUDIFY_TERRAFORM_ARTIFACT_KEY"))
+	if err != nil || len(encryptionKey) != 32 {
+		return nil, errors.New("CLOUDIFY_TERRAFORM_ARTIFACT_KEY must be a base64-encoded 32-byte key")
+	}
 	for _, directory := range []string{workRoot, artifactRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, fmt.Errorf("create Terraform directory: %w", err)
@@ -134,18 +151,30 @@ func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, 
 	if err != nil {
 		hostname = "unknown-host"
 	}
+	artifactStore := iac.FileArtifactStore{Root: artifactRoot, EncryptionKey: encryptionKey}
+	workspaceLocker := &iac.MemoryWorkspaceLocker{}
 	planner := &iac.Planner{
-		Artifacts: iac.FileArtifactStore{Root: artifactRoot}, Locker: &iac.MemoryWorkspaceLocker{},
+		Artifacts: artifactStore, Locker: workspaceLocker,
 		BinaryPath: binaryPath, StateBucket: stateBucket, StatePrefix: "cloudify/migrations",
 	}
-	dispatcher := &plans.Dispatcher{
+	planDispatcher := &plans.Dispatcher{
 		Store: store, Planner: planner, WorkerID: fmt.Sprintf("terraform-%s-%d", hostname, os.Getpid()),
 		WorkRoot: workRoot, LeaseDuration: 10 * time.Minute, HeartbeatInterval: 30 * time.Second,
 		PollInterval: time.Second,
 	}
-	errors := make(chan error, 1)
-	go func() { errors <- dispatcher.Run(ctx) }()
-	slog.Info("Terraform plan dispatcher enabled", "worker_id", dispatcher.WorkerID)
+	applier := &iac.Applier{
+		Artifacts: artifactStore, Locker: workspaceLocker, BinaryPath: binaryPath,
+		StateBucket: stateBucket, StatePrefix: "cloudify/migrations",
+	}
+	applyDispatcher := &plans.ApplyDispatcher{
+		Store: store, Applier: applier, WorkerID: fmt.Sprintf("terraform-apply-%s-%d", hostname, os.Getpid()),
+		WorkRoot: workRoot, LeaseDuration: 30 * time.Minute, HeartbeatInterval: 30 * time.Second,
+		PollInterval: time.Second,
+	}
+	errors := make(chan error, 2)
+	go func() { errors <- planDispatcher.Run(ctx) }()
+	go func() { errors <- applyDispatcher.Run(ctx) }()
+	slog.Info("Terraform dispatchers enabled", "plan_worker_id", planDispatcher.WorkerID, "apply_worker_id", applyDispatcher.WorkerID)
 	return errors, nil
 }
 
