@@ -25,6 +25,9 @@ rewriting Cloudify's migration intelligence. See the
   in-memory development fallback.
 - Database-backed work claiming uses row locks, expiring leases, heartbeats,
   and ownership checks so multiple dispatchers can execute safely.
+- An opt-in Python worker checks out an immutable source revision in an
+  isolated workspace, supervises Cloudify without a shell, streams structured
+  output, and terminates the process group on cancellation.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 

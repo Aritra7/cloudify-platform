@@ -80,10 +80,13 @@ Status: in progress
 - [x] Postgres work claiming with `SKIP LOCKED`, expiring leases, renewal, and
   stale-worker protection.
 - [x] Dispatcher and cancellable worker interface.
+- [x] Isolated Python worker adapter with safe Git checkout, argument-based
+  subprocesses, bounded output, process-group cancellation, and cleanup.
+- [ ] Persist worker events and expose the event stream.
 - Context propagation, request limits, authentication hooks, structured logs,
   Prometheus metrics, and OpenTelemetry traces.
-- A versioned worker interface for the Python engine. Start with a subprocess
-  adapter; introduce gRPC only when the worker must run remotely.
+- [x] A versioned worker interface and local subprocess adapter for the Python
+  engine. Introduce gRPC only when the worker must run remotely.
 
 Exit criteria:
 

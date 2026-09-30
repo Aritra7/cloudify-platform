@@ -115,8 +115,8 @@ func (s *Server) cancelMigration(w http.ResponseWriter, request *http.Request) {
 
 func validateCreateRequest(request migrations.CreateRequest) error {
 	repositoryURL, err := url.ParseRequestURI(request.Source.RepositoryURL)
-	if err != nil || (repositoryURL.Scheme != "https" && repositoryURL.Scheme != "http") || repositoryURL.Host == "" {
-		return errors.New("source.repository_url must be an absolute HTTP or HTTPS URL")
+	if err != nil || repositoryURL.Scheme != "https" || repositoryURL.Host == "" || repositoryURL.User != nil {
+		return errors.New("source.repository_url must be an absolute HTTPS URL without embedded credentials")
 	}
 	if strings.TrimSpace(request.Source.Revision) == "" {
 		return errors.New("source.revision is required")

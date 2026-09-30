@@ -94,6 +94,46 @@ func TestDispatcherHonorsCancellationState(t *testing.T) {
 	}
 }
 
+func TestDispatcherCancelsWorkerContext(t *testing.T) {
+	t.Parallel()
+
+	store, service, migration := queuedMigration(t)
+	started := make(chan struct{})
+	workerCancelled := make(chan struct{})
+	dispatcher := testDispatcher(store, workerFunc(func(ctx context.Context, _ migrations.Migration) error {
+		close(started)
+		<-ctx.Done()
+		close(workerCancelled)
+		return ctx.Err()
+	}))
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.RunOnce(context.Background())
+		result <- err
+	}()
+	<-started
+	if _, err := service.Cancel(context.Background(), migration.ID); err != nil {
+		t.Fatalf("request cancellation: %v", err)
+	}
+
+	select {
+	case <-workerCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("worker context was not cancelled")
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	stored, err := service.Get(context.Background(), migration.ID)
+	if err != nil {
+		t.Fatalf("get migration: %v", err)
+	}
+	if stored.Status != migrations.StatusCancelled {
+		t.Fatalf("status = %q, want %q", stored.Status, migrations.StatusCancelled)
+	}
+}
+
 func queuedMigration(t *testing.T) (*migrations.MemoryStore, *migrations.Service, migrations.Migration) {
 	t.Helper()
 	store := migrations.NewMemoryStore()
@@ -123,6 +163,7 @@ func testDispatcher(store migrations.Store, worker Worker) *Dispatcher {
 		WorkerID:          "worker-1",
 		LeaseDuration:     time.Minute,
 		HeartbeatInterval: 30 * time.Second,
+		CancellationPoll:  5 * time.Millisecond,
 		PollInterval:      time.Millisecond,
 		Now:               func() time.Time { return time.Now().UTC() },
 	}

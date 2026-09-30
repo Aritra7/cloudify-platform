@@ -4,15 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/api"
+	"github.com/Aritra7/cloudify-platform/internal/executor"
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
+	"github.com/Aritra7/cloudify-platform/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -38,6 +42,10 @@ func run() error {
 	}
 	defer closeStore()
 	migrationService := migrations.NewService(store)
+	dispatcherErrors, err := startDispatcher(ctx, store)
+	if err != nil {
+		return err
+	}
 
 	server := &http.Server{
 		Addr:              address(),
@@ -54,19 +62,64 @@ func run() error {
 		serveErrors <- server.ListenAndServe()
 	}()
 
+	var runErr error
 	select {
 	case err := <-serveErrors:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+		if !errors.Is(err, http.ErrServerClosed) {
+			runErr = err
 		}
-		return err
+		stop()
+	case err := <-dispatcherErrors:
+		if !errors.Is(err, context.Canceled) {
+			runErr = fmt.Errorf("migration dispatcher stopped: %w", err)
+		}
+		stop()
 	case <-ctx.Done():
 		slog.Info("shutdown requested")
 	}
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	return server.Shutdown(shutdownContext)
+	shutdownErr := server.Shutdown(shutdownContext)
+	return errors.Join(runErr, shutdownErr)
+}
+
+func startDispatcher(ctx context.Context, store migrations.Store) (<-chan error, error) {
+	enabled, err := strconv.ParseBool(environment("CLOUDIFY_WORKER_ENABLED", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("parse CLOUDIFY_WORKER_ENABLED: %w", err)
+	}
+	if !enabled {
+		return nil, nil
+	}
+
+	pythonWorker, err := worker.NewPythonWorker(worker.PythonConfig{
+		EngineRoot:   environment("CLOUDIFY_ENGINE_ROOT", "."),
+		WorkRoot:     os.Getenv("CLOUDIFY_WORK_ROOT"),
+		PythonBinary: environment("CLOUDIFY_PYTHON_BINARY", "python3"),
+		GitBinary:    environment("CLOUDIFY_GIT_BINARY", "git"),
+	}, worker.OSCommandRunner{TerminationGracePeriod: 10 * time.Second}, worker.SlogSink{})
+	if err != nil {
+		return nil, fmt.Errorf("configure Python worker: %w", err)
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+	}
+	dispatcher := &executor.Dispatcher{
+		Store:             store,
+		Worker:            pythonWorker,
+		WorkerID:          fmt.Sprintf("%s-%d", hostname, os.Getpid()),
+		LeaseDuration:     2 * time.Minute,
+		HeartbeatInterval: 30 * time.Second,
+		CancellationPoll:  time.Second,
+		PollInterval:      time.Second,
+	}
+	errors := make(chan error, 1)
+	go func() { errors <- dispatcher.Run(ctx) }()
+	slog.Info("migration dispatcher enabled", "worker_id", dispatcher.WorkerID)
+	return errors, nil
 }
 
 func migrationStore(ctx context.Context) (migrations.Store, func(), error) {
@@ -91,8 +144,12 @@ func migrationStore(ctx context.Context) (migrations.Store, func(), error) {
 }
 
 func address() string {
-	if value := os.Getenv("CLOUDIFY_HTTP_ADDRESS"); value != "" {
+	return environment("CLOUDIFY_HTTP_ADDRESS", defaultAddress)
+}
+
+func environment(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
 		return value
 	}
-	return defaultAddress
+	return fallback
 }

@@ -21,6 +21,7 @@ type Dispatcher struct {
 	WorkerID          string
 	LeaseDuration     time.Duration
 	HeartbeatInterval time.Duration
+	CancellationPoll  time.Duration
 	PollInterval      time.Duration
 	Now               func() time.Time
 }
@@ -74,6 +75,8 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 
 	heartbeat := time.NewTicker(d.HeartbeatInterval)
 	defer heartbeat.Stop()
+	cancellationPoll := time.NewTicker(d.CancellationPoll)
+	defer cancellationPoll.Stop()
 
 	for {
 		select {
@@ -107,6 +110,33 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 				return true, fmt.Errorf("renew migration lease: %w", err)
 			}
 
+		case <-cancellationPoll.C:
+			current, err := d.Store.Get(ctx, migration.ID)
+			if err != nil {
+				cancelWorker()
+				return true, fmt.Errorf("poll migration cancellation: %w", err)
+			}
+			if current.Status != migrations.StatusCancelling {
+				continue
+			}
+
+			cancelWorker()
+			select {
+			case <-workerResult:
+			case <-ctx.Done():
+				return true, ctx.Err()
+			}
+			if _, err := d.Store.Complete(
+				ctx,
+				migration.ID,
+				d.WorkerID,
+				migrations.StatusCancelled,
+				d.Now(),
+			); err != nil {
+				return true, fmt.Errorf("complete migration cancellation: %w", err)
+			}
+			return true, nil
+
 		case <-ctx.Done():
 			cancelWorker()
 			return true, ctx.Err()
@@ -118,7 +148,7 @@ func (d *Dispatcher) validate() error {
 	if d.Store == nil || d.Worker == nil || d.WorkerID == "" {
 		return errors.New("dispatcher requires a store, worker, and worker ID")
 	}
-	if d.LeaseDuration <= 0 || d.HeartbeatInterval <= 0 || d.PollInterval <= 0 {
+	if d.LeaseDuration <= 0 || d.HeartbeatInterval <= 0 || d.CancellationPoll <= 0 || d.PollInterval <= 0 {
 		return errors.New("dispatcher durations must be positive")
 	}
 	if d.HeartbeatInterval >= d.LeaseDuration {
