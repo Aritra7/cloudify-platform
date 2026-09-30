@@ -11,6 +11,22 @@ permissions:
 jobs:
   go:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cloudify
+          POSTGRES_PASSWORD: cloudify
+          POSTGRES_DB: cloudify_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloudify -d cloudify_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CLOUDIFY_TEST_DATABASE_URL: postgres://cloudify:cloudify@localhost:5432/cloudify_test?sslmode=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

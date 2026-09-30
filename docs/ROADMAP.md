@@ -68,13 +68,15 @@ Exit criteria:
 
 ## Phase 1 — durable Go control plane
 
-Implement:
+Status: in progress
 
-- `POST /v1/migrations` with structured input and an idempotency key.
-- Read, cancel, retry, and event-stream endpoints.
+- [x] `POST /v1/migrations` with structured input and an idempotency key.
+- [x] Read and cancel endpoints.
+- [ ] Retry and event-stream endpoints.
 - `GET` and asynchronous `DELETE` resource endpoints.
-- Postgres repositories for jobs, resources, attempts, events, and leases.
-- Explicit migration state transitions enforced by the domain layer.
+- [x] Transactional Postgres repository for migrations.
+- [ ] Postgres repositories for resources, attempts, events, and leases.
+- [x] Explicit migration state transitions enforced by the domain layer.
 - Context propagation, request limits, authentication hooks, structured logs,
   Prometheus metrics, and OpenTelemetry traces.
 - A versioned worker interface for the Python engine. Start with a subprocess

@@ -19,10 +19,14 @@ rewriting Cloudify's migration intelligence. See the
 
 - The original Python engine and web console are preserved.
 - The Python unit suite has been updated for the current Dedalus agent API.
-- A dependency-free Go control-plane server now exposes `/healthz` and
-  `/readyz` and shuts down gracefully on `SIGTERM`.
+- The Go control plane exposes health/readiness plus structured create, read,
+  and cancel migration endpoints with strict validation and idempotency.
+- Migration state has a transactional Postgres implementation and an explicit
+  in-memory development fallback.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
-- Migration/resource APIs and persistence are the next milestone.
+- CI exercises the Postgres lifecycle against a real ephemeral database.
+
+The [API guide](docs/API.md) contains the current contract and local examples.
 
 ## Original migration engine
 
