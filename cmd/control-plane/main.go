@@ -24,6 +24,7 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/observability"
 	"github.com/Aritra7/cloudify-platform/internal/plans"
+	"github.com/Aritra7/cloudify-platform/internal/resources"
 	"github.com/Aritra7/cloudify-platform/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -51,6 +52,7 @@ func run() error {
 	defer closeStores()
 	migrationService := migrations.NewService(stores.migrations)
 	planService := plans.NewService(stores.plans, plans.DefaultPolicy())
+	resourceService := resources.NewService(stores.resources)
 	metrics := &observability.Metrics{}
 	dispatcherErrors, err := startDispatcher(ctx, stores.migrations, stores.events, metrics)
 	if err != nil {
@@ -60,14 +62,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	projectorErrors := startResourceProjector(ctx, stores.plans, resourceService)
 
-	apiServer := api.NewServerWithPlans(migrationService, stores.events, planService, metrics)
+	apiServer := api.NewServerWithResources(migrationService, stores.events, planService, resourceService, metrics)
 	if authenticationConfiguration := os.Getenv("CLOUDIFY_AUTH_TOKENS_JSON"); authenticationConfiguration != "" {
 		authenticator, err := auth.NewBearerAuthenticator(authenticationConfiguration)
 		if err != nil {
 			return fmt.Errorf("configure API authentication: %w", err)
 		}
-		apiServer = api.NewAuthenticatedServer(migrationService, stores.events, planService, metrics, authenticator)
+		apiServer = api.NewAuthenticatedServerWithResources(migrationService, stores.events, planService, resourceService, metrics, authenticator)
 	}
 	server := &http.Server{
 		Addr:              address(),
@@ -101,6 +104,11 @@ func run() error {
 			runErr = fmt.Errorf("Terraform plan dispatcher stopped: %w", err)
 		}
 		stop()
+	case err := <-projectorErrors:
+		if !errors.Is(err, context.Canceled) {
+			runErr = fmt.Errorf("managed-resource projector stopped: %w", err)
+		}
+		stop()
 	case <-ctx.Done():
 		slog.Info("shutdown requested")
 	}
@@ -109,6 +117,15 @@ func run() error {
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownContext)
 	return errors.Join(runErr, shutdownErr)
+}
+
+func startResourceProjector(ctx context.Context, planStore plans.Store, resourceService *resources.Service) <-chan error {
+	projector := &resources.Projector{
+		Plans: planStore, Resources: resourceService, PollInterval: 2 * time.Second, BatchSize: 200,
+	}
+	errors := make(chan error, 1)
+	go func() { errors <- projector.Run(ctx) }()
+	return errors
 }
 
 func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, error) {
@@ -223,6 +240,7 @@ type stores struct {
 	migrations migrations.Store
 	events     events.Store
 	plans      plans.Store
+	resources  resources.Store
 }
 
 func platformStores(ctx context.Context) (stores, func(), error) {
@@ -233,6 +251,7 @@ func platformStores(ctx context.Context) (stores, func(), error) {
 			migrations: migrations.NewMemoryStore(),
 			events:     events.NewMemoryStore(),
 			plans:      plans.NewMemoryStore(),
+			resources:  resources.NewMemoryStore(),
 		}, func() {}, nil
 	}
 
@@ -251,6 +270,7 @@ func platformStores(ctx context.Context) (stores, func(), error) {
 		migrations: migrations.NewPostgresStore(database),
 		events:     events.NewPostgresStore(database),
 		plans:      plans.NewPostgresStore(database),
+		resources:  resources.NewPostgresStore(database),
 	}, func() { _ = database.Close() }, nil
 }
 

@@ -42,6 +42,9 @@ rewriting Cloudify's migration intelligence. See the
 - Scoped bearer-token roles protect plan, approval, and apply operations. The
   apply dispatcher decrypts and verifies the approval-bound binary plan before
   executing that exact plan under a renewable lease.
+- Successful applies are projected idempotently into a durable managed-resource
+  registry with desired state, generation, remediation policy, conditions, and
+  reconciliation scheduling fields.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
 

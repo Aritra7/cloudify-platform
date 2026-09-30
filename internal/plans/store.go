@@ -17,4 +17,5 @@ type Store interface {
 	QueueApply(context.Context, string, string, time.Time) (Plan, error)
 	ClaimNextApply(context.Context, string, time.Time, time.Time) (Plan, bool, error)
 	CompleteApply(context.Context, string, string, Status, string, time.Time) (Plan, error)
+	ListApplied(context.Context, time.Time, string, int) ([]Plan, error)
 }

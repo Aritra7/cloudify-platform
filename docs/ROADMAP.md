@@ -73,10 +73,11 @@ Status: in progress
 - [x] `POST /v1/migrations` with structured input and an idempotency key.
 - [x] Read and cancel endpoints.
 - [x] Retry and event-stream endpoints.
-- `GET` and asynchronous `DELETE` resource endpoints.
+- [x] `GET` resource collection and detail endpoints.
+- [ ] Asynchronous `DELETE` resource endpoint.
 - [x] Transactional Postgres repository for migrations.
 - [x] Postgres repositories for attempts, events, and leases.
-- [ ] Postgres repository for managed resources.
+- [x] Postgres repository for managed resources.
 - [x] Explicit migration state transitions enforced by the domain layer.
 - [x] Postgres work claiming with `SKIP LOCKED`, expiring leases, renewal, and
   stale-worker protection.
@@ -136,6 +137,15 @@ Exit criteria:
   tested.
 
 ## Phase 3 — reconciliation and self-healing
+
+Status: in progress
+
+- [x] Project applied plans into a durable, idempotent managed-resource
+  registry.
+- [x] Record desired state, generation, observed generation, conditions, retry
+  count, remediation policy, and reconciliation scheduling fields.
+- [ ] Observe Cloud Run state and classify drift under a renewable lease.
+- [ ] Trigger policy-gated Terraform remediation with backoff and audit events.
 
 Each resource records desired state, observed state, generation, observed
 generation, conditions, retry count, and remediation policy.

@@ -18,6 +18,7 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/observability"
 	"github.com/Aritra7/cloudify-platform/internal/plans"
+	"github.com/Aritra7/cloudify-platform/internal/resources"
 )
 
 func TestOperationalEndpoints(t *testing.T) {
@@ -384,6 +385,39 @@ func TestTerraformPlanCreateReadAndApprove(t *testing.T) {
 	server.Handler().ServeHTTP(applyResponse, applyRequest)
 	if applyResponse.Code != http.StatusAccepted {
 		t.Fatalf("apply status = %d: %s", applyResponse.Code, applyResponse.Body.String())
+	}
+}
+
+func TestManagedResourceListAndGet(t *testing.T) {
+	t.Parallel()
+	resourceService := resources.NewService(resources.NewMemoryStore())
+	plan := plans.Plan{
+		ID: "plan-1", MigrationID: "7b629d1d-7602-4de6-82bd-340fc18e55b6", Status: plans.StatusApplied,
+		Specification: iac.DeploymentSpec{
+			Version: iac.SpecificationVersion, MigrationID: "7b629d1d-7602-4de6-82bd-340fc18e55b6",
+			ProjectID: "example-project", Region: "us-central1", ServiceName: "example-api",
+			Image:               "us-docker.pkg.dev/example-project/apps/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ServiceAccountEmail: "cloud-run@example-project.iam.gserviceaccount.com",
+			CPU:                 "1", Memory: "512Mi", MaxInstances: 3,
+		},
+	}
+	projected, _, err := resourceService.ProjectApplied(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("project applied plan: %v", err)
+	}
+	server := NewServerWithResources(
+		migrations.NewService(migrations.NewMemoryStore()), events.NewMemoryStore(), nil,
+		resourceService, &observability.Metrics{},
+	)
+	listResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/resources?limit=10", nil))
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"name":"example-api"`) {
+		t.Fatalf("list response = %d: %s", listResponse.Code, listResponse.Body.String())
+	}
+	getResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getResponse, httptest.NewRequest(http.MethodGet, "/v1/resources/"+projected.ID, nil))
+	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"generation":1`) {
+		t.Fatalf("get response = %d: %s", getResponse.Code, getResponse.Body.String())
 	}
 }
 

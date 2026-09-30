@@ -17,6 +17,7 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/migrations"
 	"github.com/Aritra7/cloudify-platform/internal/observability"
 	"github.com/Aritra7/cloudify-platform/internal/plans"
+	"github.com/Aritra7/cloudify-platform/internal/resources"
 )
 
 const maxRequestBodyBytes = 1 << 20
@@ -28,6 +29,7 @@ type Server struct {
 	events     events.Store
 	metrics    *observability.Metrics
 	plans      *plans.Service
+	resources  *resources.Service
 }
 
 // NewServer constructs an API server with operational endpoints.
@@ -46,10 +48,21 @@ func NewServerWithPlans(
 	planService *plans.Service,
 	metricSet *observability.Metrics,
 ) *Server {
+	return NewServerWithResources(migrationService, eventStore, planService, nil, metricSet)
+}
+
+// NewServerWithResources constructs the complete API including managed resources.
+func NewServerWithResources(
+	migrationService *migrations.Service,
+	eventStore events.Store,
+	planService *plans.Service,
+	resourceService *resources.Service,
+	metricSet *observability.Metrics,
+) *Server {
 	if metricSet == nil {
 		metricSet = &observability.Metrics{}
 	}
-	server := &Server{migrations: migrationService, events: eventStore, metrics: metricSet, plans: planService}
+	server := &Server{migrations: migrationService, events: eventStore, metrics: metricSet, plans: planService, resources: resourceService}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready)
@@ -67,6 +80,10 @@ func NewServerWithPlans(
 		mux.HandleFunc("POST /v1/plans/{id}/approve", server.approveTerraformPlan)
 		mux.HandleFunc("POST /v1/plans/{id}/apply", server.applyTerraformPlan)
 	}
+	if resourceService != nil {
+		mux.HandleFunc("GET /v1/resources", server.listResources)
+		mux.HandleFunc("GET /v1/resources/{id}", server.getResource)
+	}
 	server.handler = mux
 
 	return server
@@ -80,9 +97,52 @@ func NewAuthenticatedServer(
 	metricSet *observability.Metrics,
 	authenticator *auth.BearerAuthenticator,
 ) *Server {
-	server := NewServerWithPlans(migrationService, eventStore, planService, metricSet)
+	return NewAuthenticatedServerWithResources(migrationService, eventStore, planService, nil, metricSet, authenticator)
+}
+
+// NewAuthenticatedServerWithResources protects the complete API with bearer authentication.
+func NewAuthenticatedServerWithResources(
+	migrationService *migrations.Service,
+	eventStore events.Store,
+	planService *plans.Service,
+	resourceService *resources.Service,
+	metricSet *observability.Metrics,
+	authenticator *auth.BearerAuthenticator,
+) *Server {
+	server := NewServerWithResources(migrationService, eventStore, planService, resourceService, metricSet)
 	server.handler = authenticator.Middleware(server.handler)
 	return server
+}
+
+func (s *Server) listResources(w http.ResponseWriter, request *http.Request) {
+	limit := 100
+	if value := request.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	resourceList, err := s.resources.List(request.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not list managed resources")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resources": resourceList})
+}
+
+func (s *Server) getResource(w http.ResponseWriter, request *http.Request) {
+	resource, err := s.resources.Get(request.Context(), request.PathValue("id"))
+	if errors.Is(err, resources.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not read managed resource")
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
 }
 
 func (s *Server) createTerraformPlan(w http.ResponseWriter, request *http.Request) {

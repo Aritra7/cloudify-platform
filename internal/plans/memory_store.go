@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -12,6 +13,28 @@ type MemoryStore struct {
 	mu            sync.RWMutex
 	byID          map[string]Plan
 	byIdempotency map[string]string
+}
+
+func (store *MemoryStore) ListApplied(_ context.Context, after time.Time, afterID string, limit int) ([]Plan, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	result := make([]Plan, 0)
+	for _, plan := range store.byID {
+		if plan.Status != StatusApplied || plan.UpdatedAt.Before(after) || (plan.UpdatedAt.Equal(after) && plan.ID <= afterID) {
+			continue
+		}
+		result = append(result, plan)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].UpdatedAt.Before(result[j].UpdatedAt)
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func NewMemoryStore() *MemoryStore {

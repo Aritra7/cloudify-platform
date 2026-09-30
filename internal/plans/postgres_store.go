@@ -280,6 +280,29 @@ func (store *PostgresStore) CompleteApply(
 	return plan, nil
 }
 
+func (store *PostgresStore) ListApplied(ctx context.Context, after time.Time, afterID string, limit int) ([]Plan, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT `+planColumns+` FROM terraform_plans
+		WHERE status = 'applied' AND (updated_at > $1 OR (updated_at = $1 AND id::text > $2))
+		ORDER BY updated_at, id LIMIT $3`, after, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list applied Terraform plans: %w", err)
+	}
+	defer rows.Close()
+	result := make([]Plan, 0)
+	for rows.Next() {
+		plan, err := scanPlan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan applied Terraform plan: %w", err)
+		}
+		result = append(result, plan)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list applied Terraform plans: %w", err)
+	}
+	return result, nil
+}
+
 const planColumns = `
 	id::text, migration_id::text, status, specification, policy, has_changes,
 	artifact_json_path, artifact_text_path, artifact_json_sha256, artifact_text_sha256,

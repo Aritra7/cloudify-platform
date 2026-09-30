@@ -203,6 +203,27 @@ an `approved` plan through `apply_queued`, `applying`, and either `applied` or
 exact binary plan covered by approval; it never silently creates a replacement
 plan.
 
+## List managed resources
+
+Successful Terraform applies are projected into the managed-resource registry.
+Projection is asynchronous and idempotent, so API restarts safely replay any
+applied plans that have not yet been materialized.
+
+```sh
+curl --fail-with-body \
+  -H 'Authorization: Bearer OPERATOR_TOKEN' \
+  'http://localhost:8080/v1/resources?limit=100'
+
+curl --fail-with-body \
+  -H 'Authorization: Bearer OPERATOR_TOKEN' \
+  http://localhost:8080/v1/resources/RESOURCE_ID
+```
+
+Each record exposes its desired deployment specification, source plan,
+generation, observed generation, drift state, conditions, retry count,
+remediation policy, and next reconciliation time. Newly projected resources
+start in `unknown` until the GCP observer completes a reconciliation.
+
 ## Error shape
 
 ```json
