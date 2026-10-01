@@ -1,0 +1,72 @@
+source:
+  path: "./examples/demo-app"
+  backend:
+    type: "spring-boot"
+    path: "backend"
+    build_tool: "maven"
+    java_version: "21"
+  frontend:
+    type: "react"
+    path: "frontend"
+    build_tool: "vite"
+    node_version: "20"
+  database:
+    type: "h2"
+    mode: "in-memory"
+    data_file: null
+gcp:
+  project_id: "replace-with-controlled-project"
+  region: "us-central1"
+  zone: "us-central1-a"
+  service_account_key: null
+  backend:
+    service_name: "cloudify-demo-api"
+    container_port: 8080
+    memory: "512Mi"
+    cpu: "1"
+    min_instances: 0
+    max_instances: 1
+    timeout: 60
+    env_vars:
+      SPRING_PROFILES_ACTIVE: "prod"
+    allow_unauthenticated: true
+  frontend:
+    site_name: "cloudify-demo-ui"
+    custom_domain: null
+  database:
+    strategy: "keep-h2"
+    cloud_sql:
+      instance_name: "cloudify-demo-db"
+      database_name: "cloudify_demo"
+      tier: "db-f1-micro"
+      database_version: "POSTGRES_15"
+      root_password: null
+  artifact_registry:
+    repository_name: "cloudify-demo"
+    format: "docker"
+    description: "Cloudify controlled demo artifacts"
+migration:
+  mode: "automated"
+  dry_run: true
+  verbose: true
+  backup_enabled: false
+  backup_path: "./backups"
+  agents:
+    max_retries: 1
+    timeout: 600
+    parallel_execution: true
+ai:
+  model: "anthropic/claude-opus-4-6"
+  temperature: 0.0
+  max_tokens: 4096
+  recommendations_enabled: false
+post_migration:
+  health_checks: true
+  generate_report: true
+  report_path: "./migration_report.md"
+  show_cost_estimates: true
+  open_in_browser: false
+notifications:
+  enabled: false
+  slack_webhook: null
+  email: null

@@ -7,10 +7,12 @@ Main CLI entry point for the migration orchestrator.
 """
 
 import asyncio
+import copy
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from dotenv import load_dotenv
@@ -27,9 +29,11 @@ from rich.progress import (
 from rich.table import Table
 from rich.tree import Tree
 
-from agents.base_agent import Event, EventBus, EventType
+from agents.base_agent import AgentResult, AgentStatus, Event, EventBus, EventType
+from agents.dry_run import execute_dry_run
 from agents.orchestrator import OrchestratorAgent
 from utils import FileOperations, setup_logging
+from utils.evidence import write_evidence
 
 # Load environment variables
 load_dotenv()
@@ -70,7 +74,11 @@ class MigrationProgress:
         """Update agent progress."""
         if agent_name in self.tasks:
             task_id = self.tasks[agent_name]
-            description = f"[green]✓[/green] {agent_name}" if status == "completed" else f"[cyan]{agent_name}"
+            description = (
+                f"[green]✓[/green] {agent_name}"
+                if status == "completed"
+                else f"[cyan]{agent_name}"
+            )
             if status == "failed":
                 description = f"[red]✗[/red] {agent_name}"
 
@@ -127,13 +135,18 @@ def validate_config(config_path: Path) -> bool:
     return True
 
 
-def check_prerequisites() -> tuple[bool, list[str]]:
+def check_prerequisites(dry_run: bool = False) -> tuple[bool, list[str]]:
     """Check if all prerequisites are met."""
     errors = []
 
+    if dry_run:
+        return True, errors
+
     # Check Dedalus API key (primary) or Anthropic key (fallback)
     if not os.getenv("DEDALUS_API_KEY") and not os.getenv("ANTHROPIC_API_KEY"):
-        errors.append("DEDALUS_API_KEY (or ANTHROPIC_API_KEY) environment variable not set")
+        errors.append(
+            "DEDALUS_API_KEY (or ANTHROPIC_API_KEY) environment variable not set"
+        )
 
     # Check for gcloud CLI
     if os.system("gcloud --version > /dev/null 2>&1") != 0:
@@ -150,27 +163,51 @@ def check_prerequisites() -> tuple[bool, list[str]]:
     return len(errors) == 0, errors
 
 
-async def run_migration(config_path: Path, dry_run: bool = False):
-    """Run the migration process."""
-    file_ops = FileOperations()
-    config = file_ops.read_yaml(config_path)
+def build_effective_config(
+    config: dict[str, Any],
+    *,
+    source_path: Path,
+    gcp_project: str | None,
+    region: str,
+    mode: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Apply CLI overrides to an isolated configuration copy."""
+    effective = copy.deepcopy(config)
+    effective["source"]["path"] = str(source_path.resolve())
+    if gcp_project:
+        effective["gcp"]["project_id"] = gcp_project
+    effective["gcp"]["region"] = region
+    effective["migration"]["mode"] = mode
+    effective["migration"]["dry_run"] = dry_run
+    return effective
 
-    if not config:
-        console.print("[red]Failed to load configuration[/red]")
-        return
 
-    if dry_run:
-        config["migration"]["dry_run"] = True
-
-    # Get Dedalus API key (prefer DEDALUS_API_KEY, fallback to ANTHROPIC_API_KEY)
-    dedalus_api_key = os.getenv("DEDALUS_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-
-    if not dedalus_api_key:
-        console.print("[red]Error:[/red] DEDALUS_API_KEY (or ANTHROPIC_API_KEY) not found in environment")
-        return
-
-    # Create event bus
+async def run_migration(config: dict[str, Any], evidence_file: Path) -> AgentResult:
+    """Run the migration process and persist redacted evidence."""
+    started_at = datetime.now(timezone.utc)
     event_bus = EventBus()
+
+    if config["migration"].get("dry_run"):
+        result = await execute_dry_run(config, event_bus)
+        write_evidence(
+            evidence_file,
+            config=config,
+            result=result,
+            events=event_bus.get_history(),
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+        )
+        console.print(f"[green]Dry-run evidence written to {evidence_file}[/green]")
+        return result
+
+    dedalus_api_key = os.getenv("DEDALUS_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    if not dedalus_api_key:
+        return AgentResult(
+            status=AgentStatus.FAILED,
+            data={},
+            errors=["DEDALUS_API_KEY (or ANTHROPIC_API_KEY) not found in environment"],
+        )
 
     # Set up progress tracking
     migration_progress = MigrationProgress()
@@ -226,10 +263,22 @@ async def run_migration(config_path: Path, dry_run: bool = False):
         dedalus_api_key=dedalus_api_key,
     )
 
-    console.print("\n[bold green]Starting migration with Dedalus multi-model handoffs...[/bold green]\n")
+    console.print(
+        "\n[bold green]Starting migration with Dedalus multi-model handoffs...[/bold green]\n"
+    )
 
     with Live(migration_progress.progress, console=console, refresh_per_second=4):
         result = await orchestrator.execute()
+
+    write_evidence(
+        evidence_file,
+        config=config,
+        result=result,
+        events=event_bus.get_history(),
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+    )
+    console.print(f"[green]Migration evidence written to {evidence_file}[/green]")
 
     console.print("\n")
 
@@ -260,13 +309,16 @@ async def run_migration(config_path: Path, dry_run: bool = False):
 
     # Display Dedalus SDK usage summary
     display_dedalus_summary(result.data)
+    return result
 
 
 def display_summary(data: dict):
     """Display migration summary."""
     summary = data.get("summary", {})
 
-    table = Table(title="Migration Summary", show_header=True, header_style="bold magenta")
+    table = Table(
+        title="Migration Summary", show_header=True, header_style="bold magenta"
+    )
     table.add_column("Phase", style="cyan")
     table.add_column("Status", style="green")
     table.add_column("Time", style="yellow")
@@ -296,7 +348,9 @@ def display_summary(data: dict):
 
     # Display AI insight
     if "ai_insight" in summary:
-        console.print(f"\n[bold cyan]AI Insight:[/bold cyan]\n  {summary['ai_insight']}")
+        console.print(
+            f"\n[bold cyan]AI Insight:[/bold cyan]\n  {summary['ai_insight']}"
+        )
 
     console.print("\n")
 
@@ -307,16 +361,22 @@ def display_dedalus_summary(data: dict):
     all_tools = data.get("all_tools_called", [])
 
     if all_models or all_tools:
-        console.print("\n[bold magenta]═══ Dedalus SDK Usage Summary ═══[/bold magenta]")
+        console.print(
+            "\n[bold magenta]═══ Dedalus SDK Usage Summary ═══[/bold magenta]"
+        )
 
         if all_models:
-            console.print("\n[bold cyan]Models Used (Multi-Model Handoffs):[/bold cyan]")
+            console.print(
+                "\n[bold cyan]Models Used (Multi-Model Handoffs):[/bold cyan]"
+            )
             for model in set(all_models):
                 count = all_models.count(model)
                 console.print(f"  • {model}")
 
         if all_tools:
-            console.print("\n[bold cyan]Tools Called (Dedalus Tool Calling):[/bold cyan]")
+            console.print(
+                "\n[bold cyan]Tools Called (Dedalus Tool Calling):[/bold cyan]"
+            )
             for tool in set(all_tools):
                 count = all_tools.count(tool)
                 console.print(f"  • {tool}")
@@ -371,6 +431,11 @@ def migrate(
         "-v",
         help="Enable verbose logging",
     ),
+    evidence_file: Path = typer.Option(
+        "./evidence_pack.json",
+        "--evidence-file",
+        help="Redacted JSON evidence output path",
+    ),
 ):
     """
     Migrate a Spring Boot + React application to Google Cloud Platform.
@@ -384,7 +449,7 @@ def migrate(
     setup_logging(level=log_level)
 
     console.print("[cyan]Checking prerequisites...[/cyan]")
-    prereqs_ok, errors = check_prerequisites()
+    prereqs_ok, errors = check_prerequisites(dry_run=dry_run)
 
     if not prereqs_ok:
         console.print("\n[bold red]Prerequisites check failed:[/bold red]")
@@ -404,13 +469,14 @@ def migrate(
     file_ops = FileOperations()
     config = file_ops.read_yaml(config_file)
 
-    if gcp_project:
-        config["gcp"]["project_id"] = gcp_project
-    if region:
-        config["gcp"]["region"] = region
-
-    config["source"]["path"] = str(source_path.resolve())
-    config["migration"]["mode"] = mode
+    config = build_effective_config(
+        config,
+        source_path=source_path,
+        gcp_project=gcp_project,
+        region=region,
+        mode=mode,
+        dry_run=dry_run,
+    )
 
     if mode == "interactive" and not dry_run:
         console.print("[bold yellow]Migration Configuration:[/bold yellow]")
@@ -426,7 +492,11 @@ def migrate(
             console.print("Migration cancelled.")
             raise typer.Exit(code=0)
 
-    asyncio.run(run_migration(config_file, dry_run))
+    result = asyncio.run(run_migration(config, evidence_file))
+    if result.status != AgentStatus.SUCCESS:
+        for error in result.errors:
+            console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -450,6 +520,7 @@ def init():
 
     if template_path.exists():
         import shutil
+
         shutil.copy(template_path, config_file)
         console.print(f"[green]✓ Created {config_file}[/green]")
         console.print("\nEdit the configuration file and run:")
@@ -466,7 +537,9 @@ def version():
     console.print("Automated Cloud Migration System")
     console.print("\nPowered by:")
     console.print("  • Dedalus SDK (multi-model handoffs + tool calling)")
-    console.print("  • Multi-Model Routing: GPT-4.1, Claude Opus, Claude Sonnet, GPT-4.1-mini")
+    console.print(
+        "  • Multi-Model Routing: GPT-4.1, Claude Opus, Claude Sonnet, GPT-4.1-mini"
+    )
     console.print("  • MCP Integration: Brave Search, GitHub")
     console.print("  • Google Cloud Platform")
 

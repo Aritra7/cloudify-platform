@@ -52,6 +52,9 @@ backups/
 migration_report.md
 *.backup
 
+# Java build output
+target/
+
 # GCP credentials
 **/service-account*.json
 **/credentials*.json

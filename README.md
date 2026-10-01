@@ -50,6 +50,9 @@ rewriting Cloudify's migration intelligence. See the
   policy-gated Terraform remediation with exponential backoff.
 - CI runs the Go race detector, `go vet`, and the Python test suite.
 - CI exercises the Postgres lifecycle against a real ephemeral database.
+- A checked-in Spring Boot/React fixture now produces redacted, reproducible
+  dry-run evidence without model credentials or cloud side effects. See the
+  [demo and benchmark procedure](docs/DEMO.md).
 
 The [API guide](docs/API.md) contains the current contract and local examples.
 The [execution model](docs/EXECUTION.md) documents job ownership and recovery.
@@ -171,8 +174,22 @@ python migration_orchestrator.py migrate [OPTIONS]
 
 ## Demo
 
-A 30-second walk-through of a full migration run lives in the project
-submission; recorded captures will be added here.
+Reproduce the side-effect-free evidence pack locally:
+
+```bash
+python migration_orchestrator.py migrate \
+  --source-path ./examples/demo-app \
+  --config ./examples/demo-config.yaml \
+  --gcp-project cloudify-controlled-demo \
+  --region us-central1 \
+  --mode automated \
+  --dry-run \
+  --evidence-file ./evidence_pack.json
+```
+
+The checked-in pack is a verified dry run, not evidence of a live GCP
+deployment. The controlled live-run and benchmark protocol is documented in
+[`docs/DEMO.md`](docs/DEMO.md).
 
 ## Project layout
 

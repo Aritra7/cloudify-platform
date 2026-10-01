@@ -53,11 +53,11 @@ Status: in progress
 - [x] Add Go and Python CI jobs.
 - [x] Add a minimal Go server with health, readiness, timeouts, and graceful
   shutdown.
-- [ ] Record a reproducible dry-run fixture and a successful controlled GCP
-  migration.
-- [ ] Replace the existing failed/empty evidence pack with generated evidence
-  from a verified run.
-- [ ] Document benchmark start/end conditions before publishing any time-saved
+- [x] Record a reproducible, side-effect-free dry-run fixture and generated
+  evidence pack.
+- [ ] Record a successful controlled GCP migration and replace the dry-run pack
+  with verified live-run evidence.
+- [x] Document benchmark start/end conditions before publishing any time-saved
   metric.
 
 Exit criteria:
