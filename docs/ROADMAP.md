@@ -86,7 +86,8 @@ Status: in progress
   subprocesses, bounded output, process-group cancellation, and cleanup.
 - [x] Persist ordered worker events and expose paginated and resumable SSE APIs.
 - [x] Context propagation, request limits, and Prometheus dispatcher metrics.
-- [ ] Authentication hooks, structured request logs, and OpenTelemetry traces.
+- [x] Authentication hooks, structured request logs, and OpenTelemetry HTTP
+  traces with request/actor correlation.
 - [x] A versioned worker interface and local subprocess adapter for the Python
   engine. Introduce gRPC only when the worker must run remotely.
 

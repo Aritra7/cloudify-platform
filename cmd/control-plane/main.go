@@ -28,6 +28,7 @@ import (
 	"github.com/Aritra7/cloudify-platform/internal/resources"
 	"github.com/Aritra7/cloudify-platform/internal/worker"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -78,9 +79,11 @@ func run() error {
 		}
 		apiServer = api.NewAuthenticatedServerWithResources(migrationService, stores.events, planService, resourceService, metrics, authenticator)
 	}
+	handler := observability.RequestLogger(slog.Default())(apiServer.Handler())
+	handler = otelhttp.NewHandler(handler, "cloudify.control-plane.http")
 	server := &http.Server{
 		Addr:              address(),
-		Handler:           apiServer.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

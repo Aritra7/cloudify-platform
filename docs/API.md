@@ -4,6 +4,14 @@ The API is under active development. All migration creation requests require an
 idempotency key. Reusing a key with the same request returns the original
 migration; reusing it with a different request returns `409 Conflict`.
 
+Every response includes an `X-Request-ID`. A valid caller-supplied value is
+preserved; otherwise the server creates one. The control plane emits one
+structured log record per request containing method, path (never query
+parameters), status, response size, duration, authenticated actor when
+available, and OpenTelemetry trace/span identifiers. The HTTP surface is
+instrumented with the global OpenTelemetry provider so deployments can install
+their preferred SDK/exporter without changing handler code.
+
 ## Start locally with in-memory state
 
 ```sh

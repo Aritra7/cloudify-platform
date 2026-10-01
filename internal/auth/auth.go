@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 type Role string
@@ -89,6 +90,7 @@ func (authenticator *BearerAuthenticator) Middleware(next http.Handler) http.Han
 		presented := sha256.Sum256([]byte(strings.TrimPrefix(value, "Bearer ")))
 		for _, candidate := range authenticator.credentials {
 			if subtle.ConstantTimeCompare(presented[:], candidate.digest[:]) == 1 {
+				recordCapturedPrincipal(request.Context(), candidate.principal)
 				ctx := context.WithValue(request.Context(), principalKey{}, candidate.principal)
 				next.ServeHTTP(w, request.WithContext(ctx))
 				return
@@ -100,8 +102,44 @@ func (authenticator *BearerAuthenticator) Middleware(next http.Handler) http.Han
 
 type principalKey struct{}
 
-func RequireRole(ctx context.Context, roles ...Role) (Principal, error) {
+type principalCaptureKey struct{}
+
+type principalCapture struct {
+	mu        sync.RWMutex
+	principal Principal
+	present   bool
+}
+
+// PrincipalFromContext returns the authenticated caller, when present.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	principal, ok := ctx.Value(principalKey{}).(Principal)
+	return principal, ok
+}
+
+// CapturePrincipal allows an outer request middleware to retrieve the identity
+// established by an inner authentication middleware after the handler returns.
+func CapturePrincipal(ctx context.Context) (context.Context, func() (Principal, bool)) {
+	capture := &principalCapture{}
+	return context.WithValue(ctx, principalCaptureKey{}, capture), func() (Principal, bool) {
+		capture.mu.RLock()
+		defer capture.mu.RUnlock()
+		return capture.principal, capture.present
+	}
+}
+
+func recordCapturedPrincipal(ctx context.Context, principal Principal) {
+	capture, ok := ctx.Value(principalCaptureKey{}).(*principalCapture)
+	if !ok {
+		return
+	}
+	capture.mu.Lock()
+	capture.principal = principal
+	capture.present = true
+	capture.mu.Unlock()
+}
+
+func RequireRole(ctx context.Context, roles ...Role) (Principal, error) {
+	principal, ok := PrincipalFromContext(ctx)
 	if !ok {
 		return Principal{}, ErrUnauthenticated
 	}
