@@ -1,104 +1,215 @@
 {
-  "generated_at": "2026-02-07T14:06:30.542352Z",
-  "summary": {},
-  "tool_trace_summary": {
-    "total_calls": 0,
-    "error_count": 0,
-    "tools": {}
-  },
-  "tool_trace": [],
-  "errors": [
-    "Error code: 500 - {'detail': {'error': {'message': 'An unexpected error occurred processing your request', 'type': 'api_error', 'hint': 'If this persists, contact support@dedaluslabs.ai'}}}"
-  ],
-  "warnings": [],
   "config": {
-    "source": {
-      "path": "../BasicApp",
-      "backend": {
-        "type": "spring-boot",
-        "path": "backend",
-        "build_tool": "maven",
-        "java_version": "21"
-      },
-      "frontend": {
-        "type": "react",
-        "path": "frontend",
-        "build_tool": "vite",
-        "node_version": "20"
-      },
-      "database": {
-        "type": "h2",
-        "mode": "in-memory",
-        "data_file": null
-      }
+    "ai": {
+      "max_tokens": 4096,
+      "model": "anthropic/claude-opus-4-6",
+      "recommendations_enabled": false,
+      "temperature": 0.0
     },
     "gcp": {
-      "project_id": "cloudify-486706",
-      "region": "us-central1",
-      "zone": "us-central1-a",
-      "service_account_key": null,
+      "artifact_registry": {
+        "description": "Cloudify controlled demo artifacts",
+        "format": "docker",
+        "repository_name": "cloudify-demo"
+      },
       "backend": {
-        "service_name": "expense-calculator-backend",
+        "allow_unauthenticated": true,
         "container_port": 8080,
-        "memory": "1Gi",
         "cpu": "1",
-        "min_instances": 0,
-        "max_instances": 10,
-        "timeout": 300,
         "env_vars": {
           "SPRING_PROFILES_ACTIVE": "prod"
         },
-        "allow_unauthenticated": true
-      },
-      "frontend": {
-        "site_name": "expense-calculator-frontend",
-        "custom_domain": null
+        "max_instances": 1,
+        "memory": "512Mi",
+        "min_instances": 0,
+        "service_name": "cloudify-demo-api",
+        "timeout": 60
       },
       "database": {
-        "strategy": "keep-h2",
         "cloud_sql": {
-          "instance_name": "expense-calculator-db",
-          "database_name": "expense_calculator",
-          "tier": "db-f1-micro",
+          "database_name": "cloudify_demo",
           "database_version": "POSTGRES_15",
-          "root_password": null
-        }
+          "instance_name": "cloudify-demo-db",
+          "root_password": null,
+          "tier": "db-f1-micro"
+        },
+        "strategy": "keep-h2"
       },
-      "artifact_registry": {
-        "repository_name": "cloudify-apps",
-        "format": "docker",
-        "description": "Docker images for migrated applications"
-      }
+      "frontend": {
+        "custom_domain": null,
+        "site_name": "cloudify-demo-ui"
+      },
+      "project_id": "cloudify-controlled-demo",
+      "region": "us-central1",
+      "service_account_key": null,
+      "zone": "us-central1-a"
     },
     "migration": {
-      "mode": "interactive",
-      "dry_run": false,
-      "verbose": true,
-      "backup_enabled": true,
-      "backup_path": "./backups",
       "agents": {
-        "max_retries": 3,
-        "timeout": 600,
-        "parallel_execution": true
-      }
-    },
-    "ai": {
-      "model": "claude-opus-4-6",
-      "temperature": 0.3,
-      "max_tokens": 4096,
-      "recommendations_enabled": true
-    },
-    "post_migration": {
-      "health_checks": true,
-      "generate_report": true,
-      "report_path": "./migration_report.md",
-      "show_cost_estimates": true,
-      "open_in_browser": false
+        "max_retries": 1,
+        "parallel_execution": true,
+        "timeout": 600
+      },
+      "backup_enabled": false,
+      "backup_path": "./backups",
+      "dry_run": true,
+      "mode": "automated",
+      "verbose": true
     },
     "notifications": {
+      "email": null,
       "enabled": false,
-      "slack_webhook": null,
-      "email": null
+      "slack_webhook": null
+    },
+    "post_migration": {
+      "generate_report": true,
+      "health_checks": true,
+      "open_in_browser": false,
+      "report_path": "./migration_report.md",
+      "show_cost_estimates": true
+    },
+    "source": {
+      "backend": {
+        "build_tool": "maven",
+        "java_version": "21",
+        "path": "backend",
+        "type": "spring-boot"
+      },
+      "database": {
+        "data_file": null,
+        "mode": "in-memory",
+        "type": "h2"
+      },
+      "frontend": {
+        "build_tool": "vite",
+        "node_version": "20",
+        "path": "frontend",
+        "type": "react"
+      },
+      "path": "./examples/demo-app"
     }
-  }
+  },
+  "events": [
+    {
+      "data": {
+        "agent": "DryRun"
+      },
+      "event_id": "2c0ec7c8-06c5-42a6-8c6f-8c402b41c998",
+      "source": "DryRun",
+      "timestamp": "2026-10-01T00:24:23.279047Z",
+      "type": "agent_started"
+    },
+    {
+      "data": {
+        "agent": "DryRun",
+        "side_effects_executed": false,
+        "status": "success"
+      },
+      "event_id": "b0ea1f27-a638-4d3d-95bf-ef9f20bf6b86",
+      "source": "DryRun",
+      "timestamp": "2026-10-01T00:24:23.280538Z",
+      "type": "agent_completed"
+    }
+  ],
+  "generated_at": "2026-10-01T00:24:23.280826Z",
+  "repository_revision": "920e0ced9a013533bda6a713a9f68763f0d58609",
+  "result": {
+    "data": {
+      "analysis": {
+        "backend": {
+          "build_tool": "maven",
+          "controllers": [
+            {
+              "endpoints": [
+                {
+                  "method": "GET",
+                  "path": "/api/health"
+                }
+              ],
+              "file": "./examples/demo-app/backend/src/main/java/dev/cloudify/demo/HealthController.java"
+            }
+          ],
+          "database_config": {
+            "spring.datasource.url": "jdbc:h2:mem:cloudifydemo",
+            "spring.datasource.username": "sa",
+            "spring.jpa.hibernate.ddl-auto": "create-drop"
+          },
+          "dependencies": [
+            "spring-boot-starter-web",
+            "h2"
+          ],
+          "java_version": "21",
+          "server_config": {
+            "server.port": "8080"
+          },
+          "spring_boot_version": "3.5.0"
+        },
+        "database": {
+          "migration_recommended": true,
+          "mode": "in-memory",
+          "notes": [
+            "H2 in-memory database \u2013 data lost on restart. Recommend Cloud SQL."
+          ],
+          "type": "h2"
+        },
+        "frontend": {
+          "api_endpoints": [
+            "http://localhost:8080"
+          ],
+          "build_tool": "vite",
+          "dependencies": [
+            "@vitejs/plugin-react",
+            "vite",
+            "react",
+            "react-dom"
+          ],
+          "react_version": "19.1.1"
+        }
+      },
+      "proposed_actions": [
+        {
+          "action": "enable APIs",
+          "mutates_cloud": true,
+          "phase": "infrastructure"
+        },
+        {
+          "action": "ensure Artifact Registry repository",
+          "mutates_cloud": true,
+          "phase": "infrastructure",
+          "target": "cloudify-demo"
+        },
+        {
+          "action": "build image and deploy Cloud Run service",
+          "mutates_cloud": true,
+          "phase": "backend",
+          "target": "cloudify-demo-api"
+        },
+        {
+          "action": "build and deploy Firebase site",
+          "mutates_cloud": true,
+          "phase": "frontend",
+          "target": "cloudify-demo-ui"
+        }
+      ],
+      "side_effects_executed": false,
+      "summary": {
+        "migration_status": "previewed",
+        "project_id": "cloudify-controlled-demo",
+        "region": "us-central1",
+        "source": "./examples/demo-app"
+      }
+    },
+    "errors": [],
+    "models_used": [],
+    "tools_called": [],
+    "warnings": []
+  },
+  "run": {
+    "duration_seconds": 0.002,
+    "finished_at": "2026-10-01T00:24:23.280826Z",
+    "mode": "dry-run",
+    "started_at": "2026-10-01T00:24:23.278953Z",
+    "status": "success"
+  },
+  "schema_version": "1.0"
 }
