@@ -52,6 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.16.4"
@@ -60,3 +64,6 @@ jobs:
       - run: terraform fmt -check -recursive examples/terraform-provider
       - run: terraform -chdir=internal/iac/modules/cloud-run init -backend=false
       - run: terraform -chdir=internal/iac/modules/cloud-run validate
+      - run: go test ./internal/provider -run '^TestAcc' -v
+        env:
+          TF_ACC: "1"

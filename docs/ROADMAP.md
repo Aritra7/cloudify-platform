@@ -192,7 +192,9 @@ Initial resources and data sources:
 
 Required behaviors include asynchronous create/read/update/delete, import,
 timeouts, cancellation, drift-aware refresh, sensitive attributes, actionable
-diagnostics, and acceptance tests.
+diagnostics, and acceptance tests. Real Terraform CLI acceptance tests exercise
+migration create/read/import/destroy and managed-resource adopt/read/destroy
+against an ephemeral API in CI.
 
 Exit criteria:
 
