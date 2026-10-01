@@ -175,14 +175,17 @@ Exit criteria:
 
 ## Phase 4 — Terraform provider
 
+Status: in progress
+
 Build `terraform-provider-cloudify` with the Terraform Plugin Framework.
 
 Initial resources and data sources:
 
-- `cloudify_migration`
+- [x] `cloudify_migration` resource with asynchronous create/read, cancellation,
+  replacement semantics, configurable timeouts, and import
 - `cloudify_application`
 - `cloudify_resource`
-- `cloudify_migration` data source
+- [x] `cloudify_migration` data source
 
 Required behaviors include asynchronous create/read/update/delete, import,
 timeouts, cancellation, drift-aware refresh, sensitive attributes, actionable

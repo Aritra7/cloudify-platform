@@ -53,6 +53,9 @@ rewriting Cloudify's migration intelligence. See the
 - A checked-in Spring Boot/React fixture now produces redacted, reproducible
   dry-run evidence without model credentials or cloud side effects. See the
   [demo and benchmark procedure](docs/DEMO.md).
+- A Terraform Plugin Framework provider exposes an asynchronous
+  `cloudify_migration` resource and data source with idempotent creation,
+  polling, cancellation, import, configurable timeouts, and drift-aware reads.
 
 The [API guide](docs/API.md) contains the current contract and local examples.
 The [execution model](docs/EXECUTION.md) documents job ownership and recovery.
@@ -60,6 +63,8 @@ The [Terraform planning guide](docs/TERRAFORM.md) documents the IaC trust
 boundary, state model, and current apply gate.
 The [reconciliation guide](docs/RECONCILIATION.md) documents live-state
 observation, drift classification, leases, and remediation.
+The [Terraform provider guide](docs/TERRAFORM_PROVIDER.md) documents provider
+configuration, lifecycle semantics, import, and local development.
 
 ## Original migration engine
 

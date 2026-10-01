@@ -55,6 +55,9 @@ migration_report.md
 # Java build output
 target/
 
+# Local provider binaries
+bin/
+
 # GCP credentials
 **/service-account*.json
 **/credentials*.json

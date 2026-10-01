@@ -35,6 +35,7 @@ jobs:
           cache: false
       - run: go test -race ./...
       - run: go vet ./...
+      - run: go build -o /tmp/terraform-provider-cloudify ./cmd/terraform-provider-cloudify
 
   python:
     runs-on: ubuntu-latest
@@ -56,5 +57,6 @@ jobs:
           terraform_version: "1.16.4"
           terraform_wrapper: false
       - run: terraform fmt -check -recursive internal/iac/modules
+      - run: terraform fmt -check -recursive examples/terraform-provider
       - run: terraform -chdir=internal/iac/modules/cloud-run init -backend=false
       - run: terraform -chdir=internal/iac/modules/cloud-run validate
