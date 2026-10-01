@@ -1,0 +1,65 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: migrations.cloudify.dev
+spec:
+  group: cloudify.dev
+  scope: Namespaced
+  names:
+    plural: migrations
+    singular: migration
+    kind: Migration
+    shortNames: [cmig]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: { status: {} }
+      additionalPrinterColumns:
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Migration, type: string, jsonPath: .status.migrationID }
+        - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            apiVersion: { type: string }
+            kind: { type: string }
+            metadata: { type: object }
+            spec:
+              type: object
+              required: [source, destination]
+              properties:
+                source:
+                  type: object
+                  required: [repositoryURL, revision]
+                  properties:
+                    repositoryURL: { type: string, pattern: '^https://[^[:space:]]+$' }
+                    revision: { type: string, minLength: 1, maxLength: 200 }
+                destination:
+                  type: object
+                  required: [projectID, region, runtime]
+                  properties:
+                    projectID: { type: string, pattern: '^[a-z][a-z0-9-]{4,28}[a-z0-9]$' }
+                    region: { type: string, pattern: '^[a-z]+-[a-z]+[0-9]$' }
+                    runtime: { type: string, enum: [cloud-run] }
+                    database: { type: string, maxLength: 100 }
+            status:
+              type: object
+              properties:
+                migrationID: { type: string }
+                phase: { type: string }
+                observedGeneration: { type: integer, format: int64 }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [lastTransitionTime, message, reason, status, type]
+                    properties:
+                      lastTransitionTime: { type: string, format: date-time }
+                      message: { type: string }
+                      observedGeneration: { type: integer, format: int64 }
+                      reason: { type: string }
+                      status: { type: string, enum: ["True", "False", Unknown] }
+                      type: { type: string }

@@ -1,0 +1,16 @@
+replicaCount: 2
+image:
+  repository: ghcr.io/aritra7/cloudify-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+controlPlane:
+  endpoint: https://cloudify.example.com
+  tokenSecretName: cloudify-operator-token
+  tokenSecretKey: token
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

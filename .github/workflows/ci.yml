@@ -36,6 +36,7 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build -o /tmp/terraform-provider-cloudify ./cmd/terraform-provider-cloudify
+      - run: go build -o /tmp/cloudify-operator ./cmd/cloudify-operator
 
   python:
     runs-on: ubuntu-latest
@@ -60,10 +61,12 @@ jobs:
         with:
           terraform_version: "1.16.4"
           terraform_wrapper: false
+      - uses: azure/setup-helm@v4
       - run: terraform fmt -check -recursive internal/iac/modules
       - run: terraform fmt -check -recursive examples/terraform-provider
       - run: terraform -chdir=internal/iac/modules/cloud-run init -backend=false
       - run: terraform -chdir=internal/iac/modules/cloud-run validate
+      - run: helm lint deploy/helm/cloudify-operator
       - run: go test ./internal/provider -run '^TestAcc' -v
         env:
           TF_ACC: "1"

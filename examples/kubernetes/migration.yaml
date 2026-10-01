@@ -1,0 +1,12 @@
+apiVersion: cloudify.dev/v1alpha1
+kind: Migration
+metadata:
+  name: example-application
+spec:
+  source:
+    repositoryURL: https://github.com/example/application
+    revision: main
+  destination:
+    projectID: example-project
+    region: us-central1
+    runtime: cloud-run

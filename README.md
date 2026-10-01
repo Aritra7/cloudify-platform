@@ -67,6 +67,8 @@ The [reconciliation guide](docs/RECONCILIATION.md) documents live-state
 observation, drift classification, leases, and remediation.
 The [Terraform provider guide](docs/TERRAFORM_PROVIDER.md) documents provider
 configuration, lifecycle semantics, import, and local development.
+The [Kubernetes operator guide](docs/KUBERNETES_OPERATOR.md) documents the
+`Migration` CRD, finalizer behavior, Helm installation, and security defaults.
 
 ## Original migration engine
 

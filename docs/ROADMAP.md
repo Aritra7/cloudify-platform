@@ -204,13 +204,15 @@ Exit criteria:
 
 ## Phase 5 — Kubernetes operator
 
+Status: in progress
+
 Add a `Migration` custom resource using `controller-runtime`.
 
-- Reconcile CRD specifications into control-plane operations.
-- Use finalizers for deletion, status conditions for progress, and generation
+- [x] Reconcile CRD specifications into control-plane operations.
+- [x] Use finalizers for deletion, status conditions for progress, and generation
   checks to prevent stale writes.
 - Run Cloudify workers as Kubernetes Jobs where appropriate.
-- Add leader election, Kubernetes Events, minimal RBAC, NetworkPolicy, pod
+- [x] Add leader election, Kubernetes Events, minimal RBAC, NetworkPolicy, pod
   security settings, and a Helm chart.
 
 Exit criteria:
