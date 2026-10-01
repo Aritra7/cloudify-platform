@@ -7,9 +7,39 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/Aritra7/cloudify-platform/internal/iac"
 	"github.com/Aritra7/cloudify-platform/internal/plans"
 )
+
+type Deleter interface {
+	Delete(context.Context, Resource) error
+}
+
+type terraformDestroyer interface {
+	Destroy(context.Context, string, iac.DeploymentSpec) error
+}
+
+// TerraformDeleter runs one destroy in an isolated temporary directory. The
+// underlying destroyer owns the remote-state lock and exact-plan execution.
+type TerraformDeleter struct {
+	Destroyer terraformDestroyer
+	WorkRoot  string
+}
+
+func (deleter *TerraformDeleter) Delete(ctx context.Context, resource Resource) error {
+	if deleter.Destroyer == nil || deleter.WorkRoot == "" || !filepath.IsAbs(deleter.WorkRoot) {
+		return errors.New("Terraform deleter requires a destroyer and an absolute work root")
+	}
+	workspace, err := os.MkdirTemp(deleter.WorkRoot, "cloudify-destroy-"+resource.ID+"-")
+	if err != nil {
+		return fmt.Errorf("create Terraform destroy workspace: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(workspace) }()
+	return deleter.Destroyer.Destroy(ctx, workspace, resource.Desired)
+}
 
 var ErrRemediationPending = errors.New("Terraform remediation is pending")
 var ErrRemediationTerminal = errors.New("Terraform remediation reached a terminal failure")

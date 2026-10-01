@@ -107,6 +107,42 @@ func TestClientReturnsStructuredAPIError(t *testing.T) {
 	}
 }
 
+func TestClientRequestsAndWaitsForManagedResourceDeletion(t *testing.T) {
+	t.Parallel()
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/resources/resource-1" {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		resource := ManagedResource{ID: "resource-1", Lifecycle: "deletion_requested"}
+		switch request.Method {
+		case http.MethodDelete:
+			response.WriteHeader(http.StatusAccepted)
+		case http.MethodGet:
+			if reads.Add(1) >= 2 {
+				resource.Lifecycle = "deleted"
+			}
+		default:
+			t.Fatalf("method = %s", request.Method)
+		}
+		_ = json.NewEncoder(response).Encode(resource)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, "", "", server.Client())
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	client.pollInterval = time.Millisecond
+	resource, err := client.DeleteResource(context.Background(), "resource-1")
+	if err != nil || resource.Lifecycle != "deletion_requested" {
+		t.Fatalf("delete resource = (%#v, %v)", resource, err)
+	}
+	resource, err = client.WaitResourceDeleted(context.Background(), "resource-1")
+	if err != nil || resource.Lifecycle != "deleted" || reads.Load() != 2 {
+		t.Fatalf("wait resource = (%#v, %v), reads = %d", resource, err, reads.Load())
+	}
+}
+
 func testMigration(status string) Migration {
 	return Migration{
 		ID: "migration-1", Status: status,

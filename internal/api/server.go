@@ -83,11 +83,35 @@ func NewServerWithResources(
 	if resourceService != nil {
 		mux.HandleFunc("GET /v1/resources", server.listResources)
 		mux.HandleFunc("GET /v1/resources/{id}", server.getResource)
+		mux.HandleFunc("DELETE /v1/resources/{id}", server.deleteResource)
 		mux.HandleFunc("GET /v1/resources/{id}/events", server.listResourceEvents)
 	}
 	server.handler = mux
 
 	return server
+}
+
+func (s *Server) deleteResource(w http.ResponseWriter, request *http.Request) {
+	principal, err := auth.RequireRole(request.Context(), auth.RoleOperator)
+	if errors.Is(err, auth.ErrUnauthenticated) {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", err.Error())
+		return
+	}
+	if errors.Is(err, auth.ErrForbidden) {
+		writeError(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
+	resource, err := s.resources.RequestDeletion(request.Context(), request.PathValue("id"), principal.Actor)
+	if errors.Is(err, resources.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not request managed resource deletion")
+		return
+	}
+	w.Header().Set("Location", "/v1/resources/"+resource.ID)
+	writeJSON(w, http.StatusAccepted, resource)
 }
 
 // NewAuthenticatedServer protects all non-probe endpoints with bearer-token authentication.

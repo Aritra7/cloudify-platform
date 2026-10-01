@@ -36,6 +36,8 @@ func (store *PostgresStore) UpsertApplied(ctx context.Context, candidate Resourc
 				WHEN managed_resources.desired_state IS DISTINCT FROM EXCLUDED.desired_state THEN 1 ELSE 0 END,
 			observed_generation = 0,
 			state = 'unknown', conditions = '[]'::jsonb, retry_count = 0,
+			lifecycle = 'active', deletion_requested_by = NULL,
+			deletion_requested_at = NULL, deleted_at = NULL, delete_failure = NULL,
 			next_reconcile_at = EXCLUDED.next_reconcile_at, updated_at = EXCLUDED.updated_at
 		WHERE managed_resources.source_plan_id <> EXCLUDED.source_plan_id
 		RETURNING `+resourceColumns,
@@ -53,11 +55,95 @@ func (store *PostgresStore) UpsertApplied(ctx context.Context, candidate Resourc
 	return existing, false, err
 }
 
+func (store *PostgresStore) RequestDeletion(ctx context.Context, id, actor string, now time.Time) (Resource, error) {
+	resource, err := scanResource(store.db.QueryRowContext(ctx, `
+		UPDATE managed_resources SET
+			lifecycle = CASE WHEN lifecycle = 'deleted' THEN lifecycle ELSE 'deletion_requested' END,
+			deletion_requested_by = CASE WHEN lifecycle = 'deleted' THEN deletion_requested_by ELSE $2 END,
+			deletion_requested_at = CASE WHEN lifecycle = 'deleted' THEN deletion_requested_at ELSE $3 END,
+			deleted_at = CASE WHEN lifecycle = 'deleted' THEN deleted_at ELSE NULL END,
+			delete_failure = CASE WHEN lifecycle = 'deleted' THEN delete_failure ELSE NULL END,
+			next_reconcile_at = CASE WHEN lifecycle = 'deleted' THEN next_reconcile_at ELSE $3 END,
+			updated_at = $3
+		WHERE id = $1 RETURNING `+resourceColumns, id, actor, now))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Resource{}, ErrNotFound
+	}
+	if err != nil {
+		return Resource{}, fmt.Errorf("request managed resource deletion: %w", err)
+	}
+	return resource, nil
+}
+
+func (store *PostgresStore) CompleteDeletion(
+	ctx context.Context, id, workerID, failure string, next, now time.Time,
+) (Resource, error) {
+	lifecycle := LifecycleDeleted
+	state := StateMissing
+	retryIncrement := 0
+	conditionValue := "True"
+	reason := "TerraformDestroyApplied"
+	message := "managed infrastructure was destroyed"
+	var deletedAt any = now
+	if failure != "" {
+		lifecycle = LifecycleDeleteFailed
+		state = StateError
+		retryIncrement = 1
+		conditionValue = "False"
+		reason = "TerraformDestroyFailed"
+		message = "Terraform destroy failed; retry is scheduled"
+		deletedAt = nil
+	}
+	conditions, err := json.Marshal([]Condition{condition("Deleted", conditionValue, reason, message, now)})
+	if err != nil {
+		return Resource{}, fmt.Errorf("encode deletion condition: %w", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Resource{}, fmt.Errorf("begin managed resource deletion completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	resource, err := scanResource(tx.QueryRowContext(ctx, `
+		UPDATE managed_resources SET lifecycle = $3, state = $4, conditions = $5,
+			retry_count = retry_count + $6, next_reconcile_at = $7,
+			last_reconciled_at = $8, deleted_at = $9, delete_failure = NULLIF($10, ''),
+			claimed_by = NULL, lease_expires_at = NULL, updated_at = $8
+		WHERE id = $1 AND claimed_by = $2
+		RETURNING `+resourceColumns,
+		id, workerID, lifecycle, state, conditions, retryIncrement, next, now, deletedAt, failure,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Resource{}, ErrLeaseLost
+	}
+	if err != nil {
+		return Resource{}, fmt.Errorf("complete managed resource deletion: %w", err)
+	}
+	var observed any
+	if len(resource.Observed) > 0 {
+		observed = []byte(resource.Observed)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO resource_reconciliation_events (
+			resource_id, generation, observed_generation, observed_state,
+			state, conditions, retry_count, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, resource.Generation, resource.ObservedGeneration, observed,
+		resource.State, conditions, resource.RetryCount, now,
+	); err != nil {
+		return Resource{}, fmt.Errorf("append deletion event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Resource{}, fmt.Errorf("commit managed resource deletion: %w", err)
+	}
+	return resource, nil
+}
+
 func (store *PostgresStore) ClaimNext(ctx context.Context, workerID string, now, leaseUntil time.Time) (Resource, bool, error) {
 	resource, err := scanResource(store.db.QueryRowContext(ctx, `
 		WITH candidate AS (
 			SELECT id FROM managed_resources
 			WHERE next_reconcile_at <= $2
+			  AND lifecycle <> 'deleted'
 			  AND (claimed_by IS NULL OR lease_expires_at <= $2)
 			ORDER BY next_reconcile_at, updated_at
 			FOR UPDATE SKIP LOCKED LIMIT 1
@@ -233,15 +319,17 @@ const resourceColumns = `
 	id, kind, migration_id::text, source_plan_id::text, project_id, region, name,
 	desired_state, observed_state, state, remediation_policy, generation, observed_generation,
 	conditions, retry_count, next_reconcile_at, last_reconciled_at,
-	created_at, updated_at, claimed_by, lease_expires_at`
+	created_at, updated_at, lifecycle, deletion_requested_by, deletion_requested_at,
+	deleted_at, delete_failure, claimed_by, lease_expires_at`
 
 func qualifiedResourceColumns(alias string) string {
 	format := `
 	%s.id, %s.kind, %s.migration_id::text, %s.source_plan_id::text, %s.project_id, %s.region, %s.name,
 	%s.desired_state, %s.observed_state, %s.state, %s.remediation_policy, %s.generation, %s.observed_generation,
 	%s.conditions, %s.retry_count, %s.next_reconcile_at, %s.last_reconciled_at,
-	%s.created_at, %s.updated_at, %s.claimed_by, %s.lease_expires_at`
-	arguments := make([]any, 21)
+	%s.created_at, %s.updated_at, %s.lifecycle, %s.deletion_requested_by, %s.deletion_requested_at,
+	%s.deleted_at, %s.delete_failure, %s.claimed_by, %s.lease_expires_at`
+	arguments := make([]any, 26)
 	for index := range arguments {
 		arguments[index] = alias
 	}
@@ -252,14 +340,16 @@ func scanResource(row interface{ Scan(...any) error }) (Resource, error) {
 	var resource Resource
 	var desired []byte
 	var observed, conditions []byte
-	var lastReconciledAt, leaseExpiresAt sql.NullTime
-	var claimedBy sql.NullString
+	var lastReconciledAt, deletionRequestedAt, deletedAt, leaseExpiresAt sql.NullTime
+	var deletionRequestedBy, deleteFailure, claimedBy sql.NullString
 	if err := row.Scan(
 		&resource.ID, &resource.Kind, &resource.MigrationID, &resource.SourcePlanID,
 		&resource.ProjectID, &resource.Region, &resource.Name, &desired, &observed,
 		&resource.State, &resource.RemediationPolicy, &resource.Generation, &resource.ObservedGeneration,
 		&conditions, &resource.RetryCount, &resource.NextReconcileAt, &lastReconciledAt,
-		&resource.CreatedAt, &resource.UpdatedAt, &claimedBy, &leaseExpiresAt,
+		&resource.CreatedAt, &resource.UpdatedAt, &resource.Lifecycle,
+		&deletionRequestedBy, &deletionRequestedAt, &deletedAt, &deleteFailure,
+		&claimedBy, &leaseExpiresAt,
 	); err != nil {
 		return Resource{}, err
 	}
@@ -277,6 +367,18 @@ func scanResource(row interface{ Scan(...any) error }) (Resource, error) {
 	}
 	if lastReconciledAt.Valid {
 		resource.LastReconciledAt = &lastReconciledAt.Time
+	}
+	if deletionRequestedBy.Valid {
+		resource.DeletionRequestedBy = deletionRequestedBy.String
+	}
+	if deletionRequestedAt.Valid {
+		resource.DeletionRequestedAt = &deletionRequestedAt.Time
+	}
+	if deletedAt.Valid {
+		resource.DeletedAt = &deletedAt.Time
+	}
+	if deleteFailure.Valid {
+		resource.DeleteFailure = deleteFailure.String
 	}
 	if claimedBy.Valid {
 		resource.ClaimedBy = claimedBy.String

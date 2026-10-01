@@ -89,9 +89,9 @@ func (provider *cloudifyProvider) Configure(
 }
 
 func (provider *cloudifyProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{NewMigrationResource}
+	return []func() resource.Resource{NewMigrationResource, NewManagedResourceResource}
 }
 
 func (provider *cloudifyProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{NewMigrationDataSource}
+	return []func() datasource.DataSource{NewMigrationDataSource, NewManagedResourceDataSource}
 }

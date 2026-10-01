@@ -23,6 +23,12 @@ func (function remediatorFunc) Remediate(ctx context.Context, resource Resource,
 	return function(ctx, resource, observed)
 }
 
+type deleterFunc func(context.Context, Resource) error
+
+func (function deleterFunc) Delete(ctx context.Context, resource Resource) error {
+	return function(ctx, resource)
+}
+
 func TestControllerRecordsInSyncObservation(t *testing.T) {
 	t.Parallel()
 	store, resource := projectedResource(t)
@@ -91,6 +97,55 @@ func TestControllerStopsRetryingPermanentObservationFailure(t *testing.T) {
 	stored, _ := store.Get(context.Background(), resource.ID)
 	if stored.NextReconcileAt.Year() != 9999 || stored.Conditions[0].Reason != "PermanentObservationFailure" {
 		t.Fatalf("stored resource = %#v", stored)
+	}
+}
+
+func TestControllerCompletesRequestedTerraformDeletion(t *testing.T) {
+	t.Parallel()
+	store, resource := projectedResource(t)
+	if _, err := store.RequestDeletion(context.Background(), resource.ID, "operator@example.com", time.Unix(150, 0).UTC()); err != nil {
+		t.Fatalf("request deletion: %v", err)
+	}
+	deleted := false
+	controller := testController(store, observerFunc(func(context.Context, Resource) (Observation, error) {
+		t.Fatal("observer called for deletion")
+		return Observation{}, nil
+	}), nil)
+	controller.Deleter = deleterFunc(func(_ context.Context, got Resource) error {
+		deleted = got.ID == resource.ID
+		return nil
+	})
+	if processed, err := controller.RunOnce(context.Background()); err != nil || !processed {
+		t.Fatalf("RunOnce = (%v, %v)", processed, err)
+	}
+	stored, err := store.Get(context.Background(), resource.ID)
+	if err != nil {
+		t.Fatalf("get deleted resource: %v", err)
+	}
+	if !deleted || stored.Lifecycle != LifecycleDeleted || stored.DeletedAt == nil || stored.State != StateMissing {
+		t.Fatalf("deleted=%v resource=%#v", deleted, stored)
+	}
+	if processed, err := controller.RunOnce(context.Background()); err != nil || processed {
+		t.Fatalf("second RunOnce = (%v, %v), want no work", processed, err)
+	}
+}
+
+func TestControllerRetriesFailedTerraformDeletion(t *testing.T) {
+	t.Parallel()
+	store, resource := projectedResource(t)
+	if _, err := store.RequestDeletion(context.Background(), resource.ID, "operator@example.com", time.Unix(150, 0).UTC()); err != nil {
+		t.Fatalf("request deletion: %v", err)
+	}
+	controller := testController(store, observerFunc(func(context.Context, Resource) (Observation, error) {
+		return Observation{}, nil
+	}), nil)
+	controller.Deleter = deleterFunc(func(context.Context, Resource) error { return errors.New("terraform unavailable") })
+	if processed, err := controller.RunOnce(context.Background()); err != nil || !processed {
+		t.Fatalf("RunOnce = (%v, %v)", processed, err)
+	}
+	stored, _ := store.Get(context.Background(), resource.ID)
+	if stored.Lifecycle != LifecycleDeleteFailed || stored.RetryCount != 1 || stored.DeleteFailure == "" || !stored.NextReconcileAt.After(controller.Now()) {
+		t.Fatalf("resource = %#v", stored)
 	}
 }
 

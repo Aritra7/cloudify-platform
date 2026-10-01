@@ -229,6 +229,11 @@ curl --fail-with-body \
 curl --fail-with-body \
   -H 'Authorization: Bearer OPERATOR_TOKEN' \
   'http://localhost:8080/v1/resources/RESOURCE_ID/events?after=0&limit=100'
+
+curl --fail-with-body \
+  -X DELETE \
+  -H 'Authorization: Bearer OPERATOR_TOKEN' \
+  http://localhost:8080/v1/resources/RESOURCE_ID
 ```
 
 Each record exposes its desired deployment specification, source plan,
@@ -240,6 +245,13 @@ as the leased controller classifies live Cloud Run configuration. See
 [Cloud Run reconciliation](RECONCILIATION.md).
 The events endpoint returns the append-only observation history in sequence
 order, so operators can distinguish recurring drift from the latest snapshot.
+
+Deletion requires the `operator` role and returns `202 Accepted` with a
+`Location` header. The request is idempotent: it records the actor and time,
+wakes the leased reconciler, creates a Terraform destroy plan against the
+resource's remote state, and applies that exact plan under the workspace lock.
+Poll the resource URL until `lifecycle` is `deleted`. Failures remain visible as
+`delete_failed` and are retried with bounded exponential backoff.
 
 ## Error shape
 

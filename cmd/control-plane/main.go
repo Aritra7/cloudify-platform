@@ -60,12 +60,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	planDispatcherErrors, err := startPlanDispatcher(ctx, stores.plans)
+	planDispatcherErrors, workspaceLocker, err := startPlanDispatcher(ctx, stores.plans)
 	if err != nil {
 		return err
 	}
 	projectorErrors := startResourceProjector(ctx, stores.plans, resourceService)
-	reconcilerErrors, closeReconciler, err := startResourceReconciler(ctx, stores.resources, planService, metrics)
+	reconcilerErrors, closeReconciler, err := startResourceReconciler(ctx, stores.resources, planService, metrics, workspaceLocker)
 	if err != nil {
 		return err
 	}
@@ -135,6 +135,7 @@ func run() error {
 
 func startResourceReconciler(
 	ctx context.Context, resourceStore resources.Store, planService *plans.Service, metrics *observability.Metrics,
+	workspaceLocker iac.WorkspaceLocker,
 ) (<-chan error, func(), error) {
 	enabled, err := strconv.ParseBool(environment("CLOUDIFY_RECONCILER_ENABLED", "false"))
 	if err != nil {
@@ -147,6 +148,21 @@ func startResourceReconciler(
 	if err != nil || !terraformEnabled {
 		return nil, func() {}, errors.New("CLOUDIFY_TERRAFORM_ENABLED must be true when reconciliation is enabled")
 	}
+	if workspaceLocker == nil {
+		return nil, func() {}, errors.New("Terraform workspace locking is unavailable")
+	}
+	stateBucket := os.Getenv("CLOUDIFY_TERRAFORM_STATE_BUCKET")
+	if stateBucket == "" {
+		return nil, func() {}, errors.New("CLOUDIFY_TERRAFORM_STATE_BUCKET is required when reconciliation is enabled")
+	}
+	binaryPath, err := exec.LookPath(environment("CLOUDIFY_TERRAFORM_BINARY", "terraform"))
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("locate Terraform binary for reconciliation: %w", err)
+	}
+	workRoot, err := filepath.Abs(environment("CLOUDIFY_TERRAFORM_WORK_ROOT", filepath.Join(os.TempDir(), "cloudify-terraform-work")))
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("resolve Terraform work root for reconciliation: %w", err)
+	}
 	client, err := cloudrun.NewServicesClient(ctx)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("create Cloud Run client: %w", err)
@@ -157,7 +173,11 @@ func startResourceReconciler(
 	}
 	controller := &resources.Controller{
 		Store: resourceStore, Observer: resources.NewCloudRunObserver(client),
-		Remediator:    &resources.PlanRemediator{Plans: planService, Actor: "cloudify-reconciler"},
+		Remediator: &resources.PlanRemediator{Plans: planService, Actor: "cloudify-reconciler"},
+		Deleter: &resources.TerraformDeleter{Destroyer: &iac.Destroyer{
+			Locker: workspaceLocker, BinaryPath: binaryPath, StateBucket: stateBucket,
+			StatePrefix: "cloudify/migrations",
+		}, WorkRoot: workRoot},
 		WorkerID:      fmt.Sprintf("reconciler-%s-%d", hostname, os.Getpid()),
 		LeaseDuration: 2 * time.Minute, HeartbeatInterval: 30 * time.Second,
 		PollInterval: time.Second, ReconcileInterval: time.Minute, PendingInterval: 10 * time.Second,
@@ -178,40 +198,40 @@ func startResourceProjector(ctx context.Context, planStore plans.Store, resource
 	return errors
 }
 
-func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, error) {
+func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, iac.WorkspaceLocker, error) {
 	enabled, err := strconv.ParseBool(environment("CLOUDIFY_TERRAFORM_ENABLED", "false"))
 	if err != nil {
-		return nil, fmt.Errorf("parse CLOUDIFY_TERRAFORM_ENABLED: %w", err)
+		return nil, nil, fmt.Errorf("parse CLOUDIFY_TERRAFORM_ENABLED: %w", err)
 	}
 	if !enabled {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if os.Getenv("CLOUDIFY_AUTH_TOKENS_JSON") == "" {
-		return nil, errors.New("CLOUDIFY_AUTH_TOKENS_JSON is required when Terraform is enabled")
+		return nil, nil, errors.New("CLOUDIFY_AUTH_TOKENS_JSON is required when Terraform is enabled")
 	}
 	stateBucket := os.Getenv("CLOUDIFY_TERRAFORM_STATE_BUCKET")
 	if stateBucket == "" {
-		return nil, errors.New("CLOUDIFY_TERRAFORM_STATE_BUCKET is required when Terraform is enabled")
+		return nil, nil, errors.New("CLOUDIFY_TERRAFORM_STATE_BUCKET is required when Terraform is enabled")
 	}
 	binaryPath, err := exec.LookPath(environment("CLOUDIFY_TERRAFORM_BINARY", "terraform"))
 	if err != nil {
-		return nil, fmt.Errorf("locate Terraform binary: %w", err)
+		return nil, nil, fmt.Errorf("locate Terraform binary: %w", err)
 	}
 	workRoot, err := filepath.Abs(environment("CLOUDIFY_TERRAFORM_WORK_ROOT", filepath.Join(os.TempDir(), "cloudify-terraform-work")))
 	if err != nil {
-		return nil, fmt.Errorf("resolve Terraform work root: %w", err)
+		return nil, nil, fmt.Errorf("resolve Terraform work root: %w", err)
 	}
 	artifactRoot, err := filepath.Abs(environment("CLOUDIFY_TERRAFORM_ARTIFACT_ROOT", filepath.Join(os.TempDir(), "cloudify-terraform-artifacts")))
 	if err != nil {
-		return nil, fmt.Errorf("resolve Terraform artifact root: %w", err)
+		return nil, nil, fmt.Errorf("resolve Terraform artifact root: %w", err)
 	}
 	encryptionKey, err := base64.StdEncoding.DecodeString(os.Getenv("CLOUDIFY_TERRAFORM_ARTIFACT_KEY"))
 	if err != nil || len(encryptionKey) != 32 {
-		return nil, errors.New("CLOUDIFY_TERRAFORM_ARTIFACT_KEY must be a base64-encoded 32-byte key")
+		return nil, nil, errors.New("CLOUDIFY_TERRAFORM_ARTIFACT_KEY must be a base64-encoded 32-byte key")
 	}
 	for _, directory := range []string{workRoot, artifactRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return nil, fmt.Errorf("create Terraform directory: %w", err)
+			return nil, nil, fmt.Errorf("create Terraform directory: %w", err)
 		}
 	}
 	hostname, err := os.Hostname()
@@ -242,7 +262,7 @@ func startPlanDispatcher(ctx context.Context, store plans.Store) (<-chan error, 
 	go func() { errors <- planDispatcher.Run(ctx) }()
 	go func() { errors <- applyDispatcher.Run(ctx) }()
 	slog.Info("Terraform dispatchers enabled", "plan_worker_id", planDispatcher.WorkerID, "apply_worker_id", applyDispatcher.WorkerID)
-	return errors, nil
+	return errors, workspaceLocker, nil
 }
 
 func startDispatcher(ctx context.Context, migrationStore migrations.Store, eventStore events.Store, metrics *observability.Metrics) (<-chan error, error) {

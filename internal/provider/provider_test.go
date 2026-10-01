@@ -29,4 +29,10 @@ func TestProtocolSchemaIsValid(t *testing.T) {
 	if response.DataSourceSchemas["cloudify_migration"] == nil {
 		t.Fatal("cloudify_migration data source schema is missing")
 	}
+	if response.ResourceSchemas["cloudify_resource"] == nil {
+		t.Fatal("cloudify_resource resource schema is missing")
+	}
+	if response.DataSourceSchemas["cloudify_resource"] == nil {
+		t.Fatal("cloudify_resource data source schema is missing")
+	}
 }

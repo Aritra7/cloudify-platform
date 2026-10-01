@@ -18,6 +18,7 @@ type Controller struct {
 	Store             Store
 	Observer          Observer
 	Remediator        Remediator
+	Deleter           Deleter
 	WorkerID          string
 	LeaseDuration     time.Duration
 	HeartbeatInterval time.Duration
@@ -71,6 +72,15 @@ func (controller *Controller) RunOnce(ctx context.Context) (bool, error) {
 	for {
 		select {
 		case result := <-results:
+			if result.Deletion {
+				if _, err := controller.Store.CompleteDeletion(
+					ctx, resource.ID, controller.WorkerID, result.DeletionFailure,
+					result.NextReconcileAt, controller.Now(),
+				); err != nil {
+					return true, fmt.Errorf("complete managed resource deletion: %w", err)
+				}
+				return true, nil
+			}
 			if _, err := controller.Store.Complete(ctx, resource.ID, controller.WorkerID, result, controller.Now()); err != nil {
 				return true, fmt.Errorf("complete managed resource reconciliation: %w", err)
 			}
@@ -97,6 +107,21 @@ func (controller *Controller) RunOnce(ctx context.Context) (bool, error) {
 
 func (controller *Controller) reconcile(ctx context.Context, resource Resource) ReconcileResult {
 	now := controller.Now()
+	if resource.Lifecycle == LifecycleDeletionRequested || resource.Lifecycle == LifecycleDeleteFailed {
+		result := ReconcileResult{Deletion: true, LastReconciledAt: now}
+		if controller.Deleter == nil {
+			result.DeletionFailure = "Terraform deletion is not configured"
+			result.NextReconcileAt = permanentRetryTime()
+			return result
+		}
+		if err := controller.Deleter.Delete(ctx, resource); err != nil {
+			result.DeletionFailure = "Terraform destroy failed"
+			result.NextReconcileAt = now.Add(retryDelay(resource.ID, resource.RetryCount+1))
+			return result
+		}
+		result.NextReconcileAt = permanentRetryTime()
+		return result
+	}
 	observed, err := controller.Observer.Observe(ctx, resource)
 	if err != nil {
 		return controller.observationFailure(resource, err, now)

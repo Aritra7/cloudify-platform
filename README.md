@@ -56,6 +56,8 @@ rewriting Cloudify's migration intelligence. See the
 - A Terraform Plugin Framework provider exposes an asynchronous
   `cloudify_migration` resource and data source with idempotent creation,
   polling, cancellation, import, configurable timeouts, and drift-aware reads.
+- Managed resources support authenticated, asynchronous Terraform-backed
+  deletion and provider-driven adoption, refresh, import, and teardown.
 
 The [API guide](docs/API.md) contains the current contract and local examples.
 The [execution model](docs/EXECUTION.md) documents job ownership and recovery.

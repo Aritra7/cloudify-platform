@@ -104,6 +104,22 @@ func TestPostgresManagedResourceProjection(t *testing.T) {
 	if err := json.Unmarshal(events[0].Observed, &observed); err != nil || !observed.Exists {
 		t.Fatalf("decode reconciliation observation = (%#v, %v)", observed, err)
 	}
+	deletionTime := reconcileAt.Add(3 * time.Second)
+	requested, err := store.RequestDeletion(ctx, created.ID, "operator@example.com", deletionTime)
+	if err != nil || requested.Lifecycle != LifecycleDeletionRequested || requested.DeletionRequestedAt == nil {
+		t.Fatalf("request deletion = (%#v, %v)", requested, err)
+	}
+	claimed, ok, err = store.ClaimNext(ctx, "reconciler-1", deletionTime, deletionTime.Add(time.Minute))
+	if err != nil || !ok || claimed.Lifecycle != LifecycleDeletionRequested {
+		t.Fatalf("claim deletion = (%#v, %v, %v)", claimed, ok, err)
+	}
+	deleted, err := store.CompleteDeletion(ctx, created.ID, "reconciler-1", "", permanentRetryTime(), deletionTime.Add(time.Second))
+	if err != nil || deleted.Lifecycle != LifecycleDeleted || deleted.DeletedAt == nil || deleted.State != StateMissing {
+		t.Fatalf("complete deletion = (%#v, %v)", deleted, err)
+	}
+	if _, ok, err := store.ClaimNext(ctx, "reconciler-2", permanentRetryTime(), permanentRetryTime()); err != nil || ok {
+		t.Fatalf("claim deleted resource = (%v, %v), want no claim", ok, err)
+	}
 }
 
 func insertAppliedPlan(t *testing.T, ctx context.Context, database *sql.DB, plan plans.Plan) {

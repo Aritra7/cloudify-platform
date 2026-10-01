@@ -54,9 +54,9 @@ than mutating an immutable historical operation.
 
 Destroy cancels a queued or running migration and waits for terminal state.
 For an already-terminal migration it removes the operation from Terraform
-state. It does **not** destroy infrastructure produced by a successful
-migration; that requires the planned asynchronous managed-resource deletion
-API.
+state. Infrastructure produced by a successful migration is managed separately
+with `cloudify_resource` so destroying historical operation state cannot
+accidentally destroy a running service.
 
 Import uses the migration UUID:
 
@@ -74,6 +74,30 @@ data "cloudify_migration" "application" {
 
 The resource and data source expose status, attempt count, source and target
 properties, plus creation and update timestamps.
+
+## Managed resource
+
+`cloudify_resource` adopts a resource already projected from an applied
+Cloudify Terraform plan. Creation verifies the remote record, reads refresh
+drift and reconciliation status, and destroy invokes the asynchronous,
+Terraform-backed deletion API and waits for its durable lifecycle to reach
+`deleted`.
+
+```hcl
+resource "cloudify_resource" "application" {
+  id = var.managed_resource_id
+
+  timeouts = {
+    create = "30s"
+    read   = "30s"
+    delete = "30m"
+  }
+}
+```
+
+The corresponding `cloudify_resource` data source is read-only. Both expose
+desired and observed JSON, generations, drift state, lifecycle status, retry
+count, and deletion audit fields. Import uses the managed-resource UUID.
 
 ## Local development
 

@@ -27,6 +27,15 @@ const (
 	RemediationAutomatic RemediationPolicy = "automatic"
 )
 
+type Lifecycle string
+
+const (
+	LifecycleActive            Lifecycle = "active"
+	LifecycleDeletionRequested Lifecycle = "deletion_requested"
+	LifecycleDeleteFailed      Lifecycle = "delete_failed"
+	LifecycleDeleted           Lifecycle = "deleted"
+)
+
 var ErrNotFound = errors.New("managed resource not found")
 var ErrLeaseLost = errors.New("managed resource reconciliation lease was lost")
 
@@ -41,27 +50,32 @@ type Condition struct {
 // Resource is the durable desired/observed-state record reconciled by the
 // control plane. Desired never contains secret values, only references.
 type Resource struct {
-	ID                 string             `json:"id"`
-	Kind               string             `json:"kind"`
-	MigrationID        string             `json:"migration_id"`
-	SourcePlanID       string             `json:"source_plan_id"`
-	ProjectID          string             `json:"project_id"`
-	Region             string             `json:"region"`
-	Name               string             `json:"name"`
-	Desired            iac.DeploymentSpec `json:"desired"`
-	Observed           json.RawMessage    `json:"observed,omitempty"`
-	State              State              `json:"state"`
-	RemediationPolicy  RemediationPolicy  `json:"remediation_policy"`
-	Generation         int64              `json:"generation"`
-	ObservedGeneration int64              `json:"observed_generation"`
-	Conditions         []Condition        `json:"conditions"`
-	RetryCount         int                `json:"retry_count"`
-	NextReconcileAt    time.Time          `json:"next_reconcile_at"`
-	LastReconciledAt   *time.Time         `json:"last_reconciled_at,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	ClaimedBy          string             `json:"-"`
-	LeaseExpiresAt     *time.Time         `json:"-"`
+	ID                  string             `json:"id"`
+	Kind                string             `json:"kind"`
+	MigrationID         string             `json:"migration_id"`
+	SourcePlanID        string             `json:"source_plan_id"`
+	ProjectID           string             `json:"project_id"`
+	Region              string             `json:"region"`
+	Name                string             `json:"name"`
+	Desired             iac.DeploymentSpec `json:"desired"`
+	Observed            json.RawMessage    `json:"observed,omitempty"`
+	State               State              `json:"state"`
+	RemediationPolicy   RemediationPolicy  `json:"remediation_policy"`
+	Lifecycle           Lifecycle          `json:"lifecycle"`
+	Generation          int64              `json:"generation"`
+	ObservedGeneration  int64              `json:"observed_generation"`
+	Conditions          []Condition        `json:"conditions"`
+	RetryCount          int                `json:"retry_count"`
+	NextReconcileAt     time.Time          `json:"next_reconcile_at"`
+	LastReconciledAt    *time.Time         `json:"last_reconciled_at,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+	DeletionRequestedBy string             `json:"deletion_requested_by,omitempty"`
+	DeletionRequestedAt *time.Time         `json:"deletion_requested_at,omitempty"`
+	DeletedAt           *time.Time         `json:"deleted_at,omitempty"`
+	DeleteFailure       string             `json:"delete_failure,omitempty"`
+	ClaimedBy           string             `json:"-"`
+	LeaseExpiresAt      *time.Time         `json:"-"`
 }
 
 type ReconcileResult struct {
@@ -74,6 +88,8 @@ type ReconcileResult struct {
 	LastReconciledAt     time.Time
 	RemediationAttempted bool
 	RemediationFailed    bool
+	Deletion             bool
+	DeletionFailure      string
 }
 
 type Event struct {

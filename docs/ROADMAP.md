@@ -74,7 +74,8 @@ Status: in progress
 - [x] Read and cancel endpoints.
 - [x] Retry and event-stream endpoints.
 - [x] `GET` resource collection and detail endpoints.
-- [ ] Asynchronous `DELETE` resource endpoint.
+- [x] Asynchronous, authenticated `DELETE` resource endpoint backed by an exact
+  Terraform destroy plan, durable lifecycle, leases, audit fields, and retries.
 - [x] Transactional Postgres repository for migrations.
 - [x] Postgres repositories for attempts, events, and leases.
 - [x] Postgres repository for managed resources.
@@ -185,7 +186,8 @@ Initial resources and data sources:
 - [x] `cloudify_migration` resource with asynchronous create/read, cancellation,
   replacement semantics, configurable timeouts, and import
 - `cloudify_application`
-- `cloudify_resource`
+- [x] `cloudify_resource` resource and data source with adoption, drift-aware
+  refresh, import, timeouts, and asynchronous Terraform-backed deletion
 - [x] `cloudify_migration` data source
 
 Required behaviors include asynchronous create/read/update/delete, import,

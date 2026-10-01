@@ -16,6 +16,11 @@ variable "cloudify_endpoint" {
   default     = "http://localhost:8080"
 }
 
+variable "managed_resource_id" {
+  type        = string
+  description = "Managed-resource UUID projected after an applied Cloudify plan"
+}
+
 resource "cloudify_migration" "demo" {
   idempotency_key = "terraform-provider-demo-main"
   repository_url  = "https://github.com/example/application"
@@ -37,4 +42,18 @@ data "cloudify_migration" "demo" {
 
 output "migration_status" {
   value = data.cloudify_migration.demo.status
+}
+
+resource "cloudify_resource" "demo" {
+  id = var.managed_resource_id
+
+  timeouts = {
+    create = "30s"
+    read   = "30s"
+    delete = "30m"
+  }
+}
+
+output "resource_reconciliation_state" {
+  value = cloudify_resource.demo.state
 }

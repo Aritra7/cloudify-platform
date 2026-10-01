@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/Aritra7/cloudify-platform/internal/plans"
@@ -27,9 +28,17 @@ func (service *Service) ProjectApplied(ctx context.Context, plan plans.Plan) (Re
 		MigrationID: plan.MigrationID, SourcePlanID: plan.ID,
 		ProjectID: plan.Specification.ProjectID, Region: plan.Specification.Region, Name: plan.Specification.ServiceName,
 		Desired: plan.Specification, State: StateUnknown, RemediationPolicy: RemediationAutomatic,
-		Generation: 1, Conditions: []Condition{}, NextReconcileAt: now, CreatedAt: now, UpdatedAt: now,
+		Lifecycle: LifecycleActive, Generation: 1, Conditions: []Condition{}, NextReconcileAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	return service.store.UpsertApplied(ctx, candidate)
+}
+
+func (service *Service) RequestDeletion(ctx context.Context, id, actor string) (Resource, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" || len(actor) > 200 {
+		return Resource{}, errors.New("deletion actor is required and must not exceed 200 characters")
+	}
+	return service.store.RequestDeletion(ctx, id, actor, service.now())
 }
 
 func (service *Service) Get(ctx context.Context, id string) (Resource, error) {

@@ -437,6 +437,55 @@ func TestManagedResourceListAndGet(t *testing.T) {
 	}
 }
 
+func TestManagedResourceDeletionRequiresOperatorAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+	resourceStore := resources.NewMemoryStore()
+	resourceService := resources.NewService(resourceStore)
+	projected, _, err := resourceService.ProjectApplied(context.Background(), plans.Plan{
+		ID: "plan-delete", MigrationID: "7b629d1d-7602-4de6-82bd-340fc18e55b6", Status: plans.StatusApplied,
+		Specification: iac.DeploymentSpec{
+			Version: iac.SpecificationVersion, MigrationID: "7b629d1d-7602-4de6-82bd-340fc18e55b6",
+			ProjectID: "example-project", Region: "us-central1", ServiceName: "delete-api",
+			Image:               "us-docker.pkg.dev/example-project/apps/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ServiceAccountEmail: "cloud-run@example-project.iam.gserviceaccount.com",
+			CPU:                 "1", Memory: "512Mi", MaxInstances: 3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("project resource: %v", err)
+	}
+	token := "resource-delete-token"
+	digest := sha256.Sum256([]byte(token))
+	authenticator, err := auth.NewBearerAuthenticator(fmt.Sprintf(
+		`[{"actor":"operator@example.com","token_sha256":"%x","roles":["operator"]}]`, digest,
+	))
+	if err != nil {
+		t.Fatalf("create authenticator: %v", err)
+	}
+	server := NewAuthenticatedServerWithResources(
+		migrations.NewService(migrations.NewMemoryStore()), events.NewMemoryStore(), nil,
+		resourceService, &observability.Metrics{}, authenticator,
+	)
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodDelete, "/v1/resources/"+projected.ID, nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.Code)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodDelete, "/v1/resources/"+projected.ID, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted || response.Header().Get("Location") != "/v1/resources/"+projected.ID {
+			t.Fatalf("delete attempt %d = %d: %s", attempt, response.Code, response.Body.String())
+		}
+	}
+	stored, err := resourceStore.Get(context.Background(), projected.ID)
+	if err != nil || stored.Lifecycle != resources.LifecycleDeletionRequested || stored.DeletionRequestedBy != "operator@example.com" {
+		t.Fatalf("stored resource = (%#v, %v)", stored, err)
+	}
+}
+
 func newTestServer() *Server {
 	return NewServer(migrations.NewService(migrations.NewMemoryStore()), events.NewMemoryStore())
 }

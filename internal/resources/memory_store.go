@@ -22,7 +22,7 @@ func (store *MemoryStore) ClaimNext(_ context.Context, workerID string, now, lea
 	var selected Resource
 	found := false
 	for _, resource := range store.byID {
-		claimable := !resource.NextReconcileAt.After(now) &&
+		claimable := resource.Lifecycle != LifecycleDeleted && !resource.NextReconcileAt.After(now) &&
 			(resource.ClaimedBy == "" || resource.LeaseExpiresAt == nil || !resource.LeaseExpiresAt.After(now))
 		if claimable && (!found || resource.NextReconcileAt.Before(selected.NextReconcileAt)) {
 			selected, found = resource, true
@@ -36,6 +36,73 @@ func (store *MemoryStore) ClaimNext(_ context.Context, workerID string, now, lea
 	selected.UpdatedAt = now
 	store.byID[selected.ID] = selected
 	return selected, true, nil
+}
+
+func (store *MemoryStore) RequestDeletion(_ context.Context, id, actor string, now time.Time) (Resource, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	resource, exists := store.byID[id]
+	if !exists {
+		return Resource{}, ErrNotFound
+	}
+	if resource.Lifecycle == LifecycleDeleted || resource.Lifecycle == LifecycleDeletionRequested {
+		return resource, nil
+	}
+	resource.Lifecycle = LifecycleDeletionRequested
+	resource.DeletionRequestedBy = actor
+	resource.DeletionRequestedAt = timePointer(now)
+	resource.DeletedAt = nil
+	resource.DeleteFailure = ""
+	resource.NextReconcileAt = now
+	resource.UpdatedAt = now
+	store.byID[id] = resource
+	return resource, nil
+}
+
+func (store *MemoryStore) CompleteDeletion(
+	_ context.Context, id, workerID, failure string, next, now time.Time,
+) (Resource, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	resource, exists := store.byID[id]
+	if !exists {
+		return Resource{}, ErrNotFound
+	}
+	if resource.ClaimedBy != workerID {
+		return Resource{}, ErrLeaseLost
+	}
+	resource.ClaimedBy = ""
+	resource.LeaseExpiresAt = nil
+	resource.LastReconciledAt = timePointer(now)
+	resource.UpdatedAt = now
+	conditionReason := "TerraformDestroyApplied"
+	conditionMessage := "managed infrastructure was destroyed"
+	resource.State = StateMissing
+	if failure == "" {
+		resource.Lifecycle = LifecycleDeleted
+		resource.DeletedAt = timePointer(now)
+		resource.DeleteFailure = ""
+		resource.NextReconcileAt = permanentRetryTime()
+		resource.RetryCount = 0
+	} else {
+		resource.Lifecycle = LifecycleDeleteFailed
+		resource.DeleteFailure = failure
+		resource.NextReconcileAt = next
+		resource.RetryCount++
+		resource.State = StateError
+		conditionReason = "TerraformDestroyFailed"
+		conditionMessage = "Terraform destroy failed; retry is scheduled"
+	}
+	resource.Conditions = []Condition{condition("Deleted", boolStatus(failure == ""), conditionReason, conditionMessage, now)}
+	store.byID[id] = resource
+	store.sequence++
+	store.events[id] = append(store.events[id], Event{
+		Sequence: store.sequence, ResourceID: id, Generation: resource.Generation,
+		ObservedGeneration: resource.ObservedGeneration, Observed: append(json.RawMessage(nil), resource.Observed...),
+		State: resource.State, Conditions: append([]Condition(nil), resource.Conditions...),
+		RetryCount: resource.RetryCount, CreatedAt: now,
+	})
+	return resource, nil
 }
 
 func (store *MemoryStore) RenewLease(_ context.Context, id, workerID string, now, leaseUntil time.Time) error {
@@ -112,6 +179,9 @@ func (store *MemoryStore) UpsertApplied(_ context.Context, candidate Resource) (
 	defer store.mu.Unlock()
 	existing, exists := store.byID[candidate.ID]
 	if !exists {
+		if candidate.Lifecycle == "" {
+			candidate.Lifecycle = LifecycleActive
+		}
 		store.byID[candidate.ID] = candidate
 		return candidate, true, nil
 	}
@@ -126,6 +196,11 @@ func (store *MemoryStore) UpsertApplied(_ context.Context, candidate Resource) (
 		existing.Generation++
 	}
 	existing.State = StateUnknown
+	existing.Lifecycle = LifecycleActive
+	existing.DeletionRequestedBy = ""
+	existing.DeletionRequestedAt = nil
+	existing.DeletedAt = nil
+	existing.DeleteFailure = ""
 	existing.ObservedGeneration = 0
 	existing.Conditions = []Condition{}
 	existing.RetryCount = 0
@@ -165,3 +240,10 @@ func (store *MemoryStore) List(_ context.Context, limit int) ([]Resource, error)
 }
 
 func timePointer(value time.Time) *time.Time { return &value }
+
+func boolStatus(value bool) string {
+	if value {
+		return "True"
+	}
+	return "False"
+}

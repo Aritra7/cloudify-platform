@@ -42,6 +42,30 @@ type CreateMigrationRequest struct {
 	Destination Destination `json:"destination"`
 }
 
+type ManagedResource struct {
+	ID                  string          `json:"id"`
+	Kind                string          `json:"kind"`
+	MigrationID         string          `json:"migration_id"`
+	SourcePlanID        string          `json:"source_plan_id"`
+	ProjectID           string          `json:"project_id"`
+	Region              string          `json:"region"`
+	Name                string          `json:"name"`
+	Desired             json.RawMessage `json:"desired"`
+	Observed            json.RawMessage `json:"observed"`
+	State               string          `json:"state"`
+	RemediationPolicy   string          `json:"remediation_policy"`
+	Lifecycle           string          `json:"lifecycle"`
+	Generation          int64           `json:"generation"`
+	ObservedGeneration  int64           `json:"observed_generation"`
+	RetryCount          int64           `json:"retry_count"`
+	DeleteFailure       string          `json:"delete_failure"`
+	DeletionRequestedBy string          `json:"deletion_requested_by"`
+	DeletionRequestedAt *time.Time      `json:"deletion_requested_at"`
+	DeletedAt           *time.Time      `json:"deleted_at"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+}
+
 type APIError struct {
 	StatusCode int
 	Code       string
@@ -105,6 +129,37 @@ func (client *Client) CancelMigration(ctx context.Context, id string) (Migration
 	var migration Migration
 	err := client.do(ctx, http.MethodPost, "/v1/migrations/"+url.PathEscape(id)+"/cancel", nil, nil, &migration)
 	return migration, err
+}
+
+func (client *Client) GetResource(ctx context.Context, id string) (ManagedResource, error) {
+	var resource ManagedResource
+	err := client.do(ctx, http.MethodGet, "/v1/resources/"+url.PathEscape(id), nil, nil, &resource)
+	return resource, err
+}
+
+func (client *Client) DeleteResource(ctx context.Context, id string) (ManagedResource, error) {
+	var resource ManagedResource
+	err := client.do(ctx, http.MethodDelete, "/v1/resources/"+url.PathEscape(id), nil, nil, &resource)
+	return resource, err
+}
+
+func (client *Client) WaitResourceDeleted(ctx context.Context, id string) (ManagedResource, error) {
+	ticker := time.NewTicker(client.pollInterval)
+	defer ticker.Stop()
+	for {
+		resource, err := client.GetResource(ctx, id)
+		if err != nil {
+			return ManagedResource{}, err
+		}
+		if resource.Lifecycle == "deleted" {
+			return resource, nil
+		}
+		select {
+		case <-ctx.Done():
+			return ManagedResource{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (client *Client) WaitMigration(ctx context.Context, id string) (Migration, error) {
